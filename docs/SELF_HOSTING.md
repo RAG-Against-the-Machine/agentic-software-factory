@@ -83,7 +83,7 @@ For a packaged deploy, ship with `TICKET_PROVIDER` blank/`mock` and configure th
 tracker after boot, in the browser: open **Settings**, pick Jira / GitHub / Trello,
 enter its config and credentials, and click **Test connection**. The credential is
 stored write-only (a `secret://org/<KEY>` pointer in `org_setting`, the bytes in a
-separate `org_secret` sink) and never echoed back; the switch takes effect on the next
+separate `org_secret` sink, encrypted at rest with `ASF_SECRET_KEY`) and never echoed back; the switch takes effect on the next
 request with no restart. Full mechanics and the `TicketProvider` contract are in
 [`PROVIDERS.md`](PROVIDERS.md).
 

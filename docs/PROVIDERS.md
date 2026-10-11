@@ -35,7 +35,8 @@ A credential you type in the UI is never echoed back and never sits in cleartext
 in the settings table:
 
 1. The bytes go to a **write-only** `org_secret` sink in Postgres (keyed by the
-   setting name).
+   setting name), **encrypted at rest** with AES-256-GCM under `ASF_SECRET_KEY`
+   (see [Encryption at rest](#encryption-at-rest) below).
 2. The `org_setting` row for that key holds only the **pointer** string
    `secret://org/<KEY>` — not the token.
 3. At provider-build time the api resolves that pointer back to the live token
@@ -44,6 +45,40 @@ in the settings table:
 
 So the browser only ever learns whether a secret is **set** or **not set**; the
 "Test connection" button proves it works without displaying it.
+
+### Encryption at rest
+
+The registry encrypts every `org_secret` value with **AES-256-GCM** under
+`ASF_SECRET_KEY`, a 32-byte key that lives only in the registry's environment —
+never in Postgres. So a `pg_dump`, a copied volume or a leaked backup holds
+ciphertext only.
+
+- **Format.** `enc:v1:<keyId>:<iv>:<tag>:<ciphertext>`: a random IV per write, the row
+  name bound as authenticated data (an envelope copied onto another row fails), and
+  `keyId` an 8-hex fingerprint of the key (not the key) so the registry and
+  `asf doctor` can tell which key a row needs.
+- **Setup.** `setup.sh` generates the key. On an older install, `asf secret-key`
+  (or re-running `setup.sh`) adds it; the registry then encrypts the existing
+  plaintext rows at its next boot, keeping each token's saved date.
+- **No key.** Everything still works, in plaintext, and `asf doctor` warns.
+- **Wrong or missing key** (e.g. a restore onto a fresh `.env`). The registry keeps
+  serving runs; `asf doctor` shows ✗ with both key ids, and a provider that needs an
+  affected token fails with that message. It is never silently treated as "not set".
+  Rows that can't be opened are never rewritten or deleted.
+- **Rotation.** `asf secret-key --rotate` moves the current key to
+  `ASF_SECRET_KEY_PREVIOUS`, writes a fresh key, lets the registry re-encrypt every row,
+  proves they all open with the new key alone, then drops the old one. With more than
+  one registry instance (a cloud deploy), give **every** instance the new key and keep
+  `ASF_SECRET_KEY_PREVIOUS` until all of them run it: a registry still on the old key
+  would write tokens only the old key can open.
+- **From a secret manager.** Like any env setting, `ASF_SECRET_KEY` may be a
+  `secret://…` pointer resolved through `SECRETS_SOURCE` at registry boot.
+- **Back the key up separately from the database.** A database backup without its key
+  loses every saved token (re-enter them in Settings); a key stored next to the
+  backups protects nothing.
+- **Scope.** This protects data at rest. Anyone who controls the running registry (its
+  environment or its process) can still read the tokens; the api and worker drop
+  `ASF_SECRET_KEY` at boot, so agents never inherit it.
 
 A hardened deployment can bypass the UI sink entirely: set
 `SECRETS_SOURCE=gcp`/`aws`/`file` and provide the provider tokens at the **env**

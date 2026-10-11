@@ -6,7 +6,7 @@ import * as store from '../runs/store.js';
 import * as gatesStore from '../runs/gates-store.js';
 import { resolveGate, retryFailedTask } from '../runs/gates.js';
 import { getOrgSettings, putOrgSetting, deleteOrgSetting } from '../settings/store.js';
-import { putOrgSecret, deleteOrgSecret, getOrgSecret, listOrgSecrets } from '../settings/secret-store.js';
+import { putOrgSecret, deleteOrgSecret, getOrgSecret, listOrgSecrets, SecretKeyError } from '../settings/secret-store.js';
 import { recordCredentialHealth, resetCredentialHealth } from '../settings/credential-health.js';
 import { listFleet, monthCostUsd, monthUnpricedRuns } from '../runs/workers.js';
 import * as queue from '../runs/queue-store.js';
@@ -143,6 +143,7 @@ export function registerRpc(app: FastifyInstance, sql: Sql): void {
       if (err instanceof themes.ThemeError) return reply.code(409).send({ error: 'theme_error', reason: err.message });
       if (err instanceof skills.SkillError) return reply.code(409).send({ error: 'skill_error', reason: err.message });
       if (err instanceof ConflictError) return reply.code(409).send({ error: 'conflict_error', reason: err.message });
+      if (err instanceof SecretKeyError) return reply.code(409).send({ error: 'secret_key_error', reason: err.message });
       if ((err as Error).name === 'SettingError') return reply.code(400).send({ error: 'setting_error', reason: (err as Error).message });
       throw err;
     }

@@ -68,6 +68,9 @@ services:
       REGISTRY_URL: http://registry:8788
       WEB_DIST: /app/web
       DATABASE_URL: ''   # only the registry talks to Postgres
+      # The saved-token key (#9) is the registry's alone; the api also drops it at boot.
+      ASF_SECRET_KEY: ''
+      ASF_SECRET_KEY_PREVIOUS: ''
       # Tracker/SCM tokens come from the shell that runs `docker compose up`, so they never
       # need to live in .env (blank there = falls through to these).
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
@@ -103,6 +106,9 @@ services:
       REGISTRY_URL: http://registry:8788
       BFF_URL: http://api:8787
       DATABASE_URL: ''   # only the registry talks to Postgres
+      # Never let an agent's environment see the saved-token key (#9).
+      ASF_SECRET_KEY: ''
+      ASF_SECRET_KEY_PREVIOUS: ''
       # Inside the container the worktrees/runs live on the named volumes, whatever .env says.
       WORKTREE_ROOT: /data/worktrees
       RUN_DATA_ROOT: /data/runs

@@ -7,6 +7,18 @@ publishes a `vX.Y.Z` release of the GHCR images
 
 ## [Unreleased]
 
+### Added
+- **Saved tokens are encrypted at rest** (#9). Tokens entered in Settings (`org_secret`)
+  are stored as AES-256-GCM envelopes under a new registry-only `ASF_SECRET_KEY`, the
+  row name bound as authenticated data. `setup.sh` generates the key; existing installs
+  run `asf secret-key` once and the registry encrypts the plaintext rows at boot,
+  keeping each token's saved date. `asf secret-key --rotate` rotates the key via
+  `ASF_SECRET_KEY_PREVIOUS`. `asf doctor` reports plaintext / encrypted / key-mismatch,
+  `asf backup` reminds you to back the key up apart from the dumps, and `asf restore`
+  checks a dump's key before replacing anything. A missing or wrong key is a loud,
+  specific error, never an "unset" token. The api and worker drop the key at boot so
+  agents never inherit it.
+
 ## [1.0.0] - 2026-10-11
 
 First public release, under the MIT license. Everything below shipped before the

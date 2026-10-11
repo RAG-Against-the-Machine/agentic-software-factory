@@ -1,4 +1,5 @@
 import { AUTH_MODES, PROVIDER_KINDS, type ProviderKind, type RunAuth } from '@asf/shared';
+import { SavedSecretUnreadable } from './registry/client.js';
 import { cfg } from './settings.js';
 import { resolveProviderSecret } from './providers/secrets.js';
 
@@ -58,11 +59,19 @@ export async function computeRunAuth(providerKind: ProviderKind = 'anthropic'): 
  * task's runtime talks to. A provider that fails to resolve is left out (that run
  * then fails clearly in the worker) rather than failing every run's context. */
 export async function computeRunAuths(): Promise<Partial<Record<ProviderKind, RunAuth>>> {
-  const entries = await Promise.all(PROVIDER_KINDS.map(async (k) => [k, await computeRunAuth(k).catch(() => null)] as const));
+  const entries = await Promise.all(PROVIDER_KINDS.map(async (k) => [k, await computeRunAuth(k).catch((err) => {
+    console.warn(JSON.stringify({ level: 'warn', msg: 'agent auth unresolved; leaving provider out of the run context', providerKind: k, reason: (err as Error).message }));
+    return null;
+  })] as const));
   return Object.fromEntries(entries.filter(([, v]) => v !== null));
 }
 
-export interface ProviderAuthStatus { mode: string; credentialPresent: boolean }
+export interface ProviderAuthStatus {
+  mode: string;
+  credentialPresent: boolean;
+  /** Set when a credential IS saved but can't be read (#9: ASF_SECRET_KEY missing/wrong). */
+  error?: string;
+}
 
 /**
  * The current auth mode per provider + whether the credential each mode needs is
@@ -82,8 +91,21 @@ async function describeOne(providerKind: ProviderKind): Promise<ProviderAuthStat
   const mode = String(cfg(def.modeKey));
   const key = def.credentialKey[mode];
   if (!key) return { mode, credentialPresent: true }; // vertex/bedrock/chatgpt/none carry no credential here
-  const value = await resolveCredential(key).catch(() => '');
-  return { mode, credentialPresent: value.length > 0 };
+  try {
+    return { mode, credentialPresent: (await resolveCredential(key)).length > 0 };
+  } catch (err) {
+    // A saved-but-undecryptable token is NOT "not set": say why, so nobody pastes
+    // a new token over one that only needs its key back.
+    if (isSavedSecretUnreadable(err)) return { mode, credentialPresent: false, error: (err as Error).message };
+    return { mode, credentialPresent: false };
+  }
+}
+
+function isSavedSecretUnreadable(err: unknown): boolean {
+  for (let e = err as { name?: string; cause?: unknown } | undefined, i = 0; e && i < 5; e = e.cause as typeof e, i++) {
+    if (e instanceof SavedSecretUnreadable || e.name === 'SavedSecretUnreadable') return true;
+  }
+  return false;
 }
 
 async function resolveCredential(key: CredentialKey): Promise<string> {

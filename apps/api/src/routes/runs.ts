@@ -81,7 +81,12 @@ export function registerRunRoutes(app: FastifyInstance, deps: { tickets: TicketP
         ...(attachments?.length ? { attachments } : {}) },
       repo,
       cloneCredential,
-      auth: await computeRunAuth('anthropic'),
+      // An unreadable saved token (#9) fails only the runs that need it (the worker
+      // reports the missing credential), not every run's context.
+      auth: await computeRunAuth('anthropic').catch((err) => {
+        req.log.warn({ reason: (err as Error).message }, 'anthropic auth unresolved');
+        return { providerKind: 'anthropic' as const, mode: String(cfg('AGENT_AUTH_MODE')) };
+      }),
       auths: await computeRunAuths(),
       workerSettings: computeWorkerSettings(),
       roleSkills: computeRoleSkills(),

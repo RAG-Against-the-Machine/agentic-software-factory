@@ -37,7 +37,7 @@ owner's own use**:
   the better fit.
 - **Get the token through Anthropic's own sign-in flow** (`claude setup-token`, or
   `claude login` on a host worker). ASF keeps the resulting token in its write-only
-  secret store (in your own Postgres, never sent back to the browser) so the worker can
+  secret store (in your own Postgres, encrypted at rest, never sent back to the browser) so the worker can
   use it. ASF never asks for your Claude password.
 
 ## Names and logos

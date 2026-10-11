@@ -99,3 +99,23 @@ test('the api\'s provider table matches the shared mode list and the settings ca
     for (const key of Object.values(def.credentialKey)) assert.equal(SETTINGS[key!].secret, true, `${key} is write-only`);
   }
 });
+
+// #9: a token that IS saved but can't be decrypted (ASF_SECRET_KEY missing/wrong)
+// is reported as such — never as "not set" — and fails only its own provider.
+function stubUnreadable(reason: string) {
+  global.fetch = (async () => new Response(JSON.stringify({ error: 'secret_key_error', reason }),
+    { status: 409, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
+}
+
+test('an undecryptable saved token is an error with its reason, not "not set"', async () => {
+  stubUnreadable('saved secret ANTHROPIC_API_KEY was encrypted with key aaaa1111, but ASF_SECRET_KEY is key bbbb2222');
+  env({ AGENT_AUTH_MODE: 'api-key', ANTHROPIC_API_KEY: 'secret://org/ANTHROPIC_API_KEY' });
+  await assert.rejects(computeRunAuth('anthropic'), /encrypted with key aaaa1111/);
+  const d = await describeAgentAuth();
+  assert.equal(d.credentialPresent, false);
+  assert.match(d.error ?? '', /encrypted with key aaaa1111/);
+  // a provider with no saved token is unaffected, and the bad one is just left out
+  const auths = await computeRunAuths();
+  assert.equal(auths.anthropic, undefined);
+  assert.equal(d.providers.openai.error, undefined);
+});

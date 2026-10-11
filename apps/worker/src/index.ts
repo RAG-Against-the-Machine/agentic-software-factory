@@ -129,7 +129,9 @@ async function main(): Promise<void> {
     const modeChanged = !!cur && cur.mode !== registeredAuthMode;
     if (modeChanged) {
       log('agent auth mode changed; re-registering', { from: registeredAuthMode, to: cur.mode, credentialPresent: cur.credentialPresent });
-      if (!cur.credentialPresent) log(`warning: ${provider} ${cur.mode} mode selected but its credential is not set; runs will fail until one is entered in Settings → Which AI should do the work?`);
+      if (!cur.credentialPresent) log((cur as { error?: string }).error
+        ? `warning: ${provider} ${cur.mode} credential is saved but unreadable: ${(cur as { error?: string }).error}`
+        : `warning: ${provider} ${cur.mode} mode selected but its credential is not set; runs will fail until one is entered in Settings → Which AI should do the work?`);
     }
     const gained = await offer.refresh((p) => effFor(eff, p), fallbackMode);
     if (!modeChanged && !gained) return;
