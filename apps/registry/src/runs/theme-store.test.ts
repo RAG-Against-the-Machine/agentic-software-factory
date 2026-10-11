@@ -161,7 +161,7 @@ test('M13: a full set (5 members x plain + 3 states = 20, plus decor) fits one R
 });
 
 test('M13: migration 019 keeps every existing picture as the plain one and the key now includes state', { skip }, async () => {
-  const [col] = await db.sql`SELECT column_default FROM information_schema.columns WHERE table_name = 'theme_image' AND column_name = 'state'`;
+  const [col] = await db.sql`SELECT column_default FROM information_schema.columns WHERE table_name = 'theme_image' AND column_name = 'state' AND table_schema = current_schema()`;
   assert.match(String(col.columnDefault), /'any'/);
   const key = await db.sql`SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
     WHERE i.indrelid = 'theme_image'::regclass AND i.indisprimary ORDER BY array_position(i.indkey, a.attnum)`;
