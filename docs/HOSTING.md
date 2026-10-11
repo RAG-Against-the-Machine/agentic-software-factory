@@ -104,7 +104,10 @@ Grant each service account `roles/secretmanager.secretAccessor` on exactly the s
 
 > **UI-configured providers vs Secret Manager.** The ticket provider and its
 > credentials can also be set entirely in **Settings** at runtime; a
-> UI-entered token is stored write-only in Postgres (`org_secret`), addressed by
+> UI-entered token is stored write-only in Postgres (`org_secret`, AES-256-GCM
+> under the registry's `ASF_SECRET_KEY`: add `ASF_SECRET_KEY=asf-secret-key:latest`
+> to the registry's `--set-secrets`, and only the registry's; when rotating, set
+> `ASF_SECRET_KEY_PREVIOUS` too until every registry revision runs the new key), addressed by
 > the `secret://org/<KEY>` pointer, and never leaves the api. For a managed
 > cloud deploy prefer Secret Manager and the **env** tier (which wins over the
 > UI-set org tier) so credentials live in one audited store and rotate there —

@@ -59,6 +59,10 @@ export const SETTINGS = {
     description: 'Where the api and worker reach the registry. The ONE value a shared deployment changes.' }),
   RUN_EVENT_SECRET: S({ type: 'string', default: '', tiers: ['env'], secret: true, group: 'Registry', readBy: ['registry', 'api', 'worker'],
     description: 'Shared machine secret (X-Run-Secret) between registry, api and worker. Must be identical on all three. Generated at boot when blank — fine on one machine, useless across hosts.' }),
+  ASF_SECRET_KEY: S({ type: 'string', default: '', tiers: ['env'], secret: true, group: 'Registry', readBy: ['registry'],
+    description: 'Encrypts tokens saved through Settings (the org_secret table) at rest with AES-256-GCM: 32 random bytes as 64 hex characters (`openssl rand -hex 32`; setup.sh and `asf secret-key` generate it). Registry only — never give it to the api or worker. Back it up separately from the database: a restore without it loses every saved token. Blank = tokens stay plaintext and doctor warns.' }),
+  ASF_SECRET_KEY_PREVIOUS: S({ type: 'string', default: '', tiers: ['env'], secret: true, group: 'Registry', readBy: ['registry'],
+    description: 'Key rotation: the OLD ASF_SECRET_KEY. At boot the registry re-encrypts every saved token from this key to ASF_SECRET_KEY; remove it once doctor shows all tokens on the new key.' }),
   STALE_AFTER_MIN: S({ type: 'number', default: 15, tiers: ['env', 'org'], group: 'Registry', readBy: ['registry'], description: 'Minutes of silence before a running run is marked stale (resumable).' }),
   WORKER_TTL_SECONDS: S({ type: 'number', default: 90, tiers: ['env', 'org'], group: 'Registry', readBy: ['registry'], description: 'Seconds since last heartbeat before a worker is forgotten and its runs staled.' }),
   RECONCILE_INTERVAL_MS: S({ type: 'number', default: 60_000, tiers: ['env'], group: 'Registry', readBy: ['registry'], description: 'How often the sweeper looks.' }),
@@ -421,4 +425,15 @@ export function renderConfigDoc(): string {
     lines.push('');
   }
   return lines.join('\n');
+}
+
+/**
+ * Keys only the registry may hold (#9): the key that decrypts saved tokens. The
+ * api and worker load the same .env in some setups (compose env_file, a host
+ * worker's --env-file), so they drop these at boot — an agent spawned by the
+ * worker inherits its environment and must never see them.
+ */
+export const REGISTRY_ONLY_ENV = ['ASF_SECRET_KEY', 'ASF_SECRET_KEY_PREVIOUS'] as const;
+export function dropRegistryOnlyEnv(env: NodeJS.ProcessEnv): void {
+  for (const k of REGISTRY_ONLY_ENV) delete env[k];
 }

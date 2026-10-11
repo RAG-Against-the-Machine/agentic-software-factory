@@ -56,7 +56,8 @@ curl -fsSL https://raw.githubusercontent.com/RAG-Against-the-Machine/agentic-sof
   generate secrets — and stops with a fix if any fails, before touching anything.
 - **Asks which mode** (1 / 2 / 3, below). Non-interactive: `ASF_MODE=1 ./scripts/setup.sh --non-interactive`.
 - **Generates `.env`** (`chmod 600`): a random `RUN_EVENT_SECRET` (the shared
-  cross-container secret) and `POSTGRES_PASSWORD`, `AUTH_MODE=none`, and the port. It
+  cross-container secret), `POSTGRES_PASSWORD`, and `ASF_SECRET_KEY` (encrypts the
+  tokens you save in Settings; back `.env` up apart from database backups), `AUTH_MODE=none`, and the port. It
   leaves `TICKET_PROVIDER`, `SCM_PROVIDER` and `AGENT_AUTH_MODE` **blank on purpose**
   so the UI owns them — you pick your real tracker and paste an agent credential in the
   browser, no restart.
@@ -111,6 +112,7 @@ scripts/asf doctor        # read-only health table (✓/✗/⚠) — start here 
 scripts/asf logs -f       # follow logs (or: asf logs worker)
 scripts/asf update        # pull pinned images and restart, wait healthy (--from-source to rebuild)
 scripts/asf backup        # immediate pg_dump into the backups volume and ./backups
+scripts/asf secret-key    # older installs: encrypt saved tokens (--rotate for a new key)
 scripts/asf open          # open the UI in a browser
 ```
 

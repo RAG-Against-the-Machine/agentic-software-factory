@@ -116,3 +116,16 @@ test('every MAX_TURNS_* setting is delivered via workerSettings.maxTurnsByRole (
     'MAX_TURNS_ORG_SETTING_KEYS must list exactly the MAX_TURNS_* settings — add the new key there; routes/runs.ts computeWorkerSettings resolves it',
   );
 });
+
+test('registry-only keys (#9) are env-only secrets read by the registry alone', async () => {
+  const { REGISTRY_ONLY_ENV, dropRegistryOnlyEnv } = await import('./settings.js');
+  for (const k of REGISTRY_ONLY_ENV) {
+    const d = SETTINGS[k];
+    assert.deepEqual(d.readBy, ['registry'], k);
+    assert.deepEqual(d.tiers, ['env'], k);
+    assert.equal(d.secret, true, k);
+  }
+  const env: NodeJS.ProcessEnv = { ASF_SECRET_KEY: 'x', ASF_SECRET_KEY_PREVIOUS: 'y', RUN_EVENT_SECRET: 'z' };
+  dropRegistryOnlyEnv(env);
+  assert.deepEqual(env, { RUN_EVENT_SECRET: 'z' });
+});

@@ -17,6 +17,18 @@ published with credit to you, unless you'd rather stay anonymous.
 
 Only the latest release gets security fixes.
 
+## Saved credentials at rest
+
+Tokens entered in Settings are stored in Postgres (`org_secret`) encrypted with
+AES-256-GCM under `ASF_SECRET_KEY`, a key held only by the registry (never in the
+database, and dropped by the api and worker at boot so agents never inherit it). A
+database dump or copied volume therefore holds ciphertext only. Back the key up
+separately from database backups. This protects data at rest; anyone who controls
+the running registry, or holds `RUN_EVENT_SECRET` and can reach the registry, can
+still obtain the tokens, so the internal trust boundary is unchanged. Without a key,
+tokens are stored in plaintext and `asf doctor` warns. Details:
+[`docs/PROVIDERS.md`](docs/PROVIDERS.md#encryption-at-rest).
+
 ## Scope and threat model
 
 In scope, for example:

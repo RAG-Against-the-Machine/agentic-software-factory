@@ -120,6 +120,20 @@ the pinned one and flags a drift. Bump `ASF_VERSION` and re-run `asf update` to 
 For the one-liner installer, `ASF_VERSION` selects the branch/tag it clones/checks
 out — e.g. `ASF_VERSION=v0.1.0 curl -fsSL …/install.sh | bash`.
 
+## Encrypting saved tokens (v1.1+)
+
+Releases from v1.1 encrypt tokens saved in Settings at rest. A fresh `setup.sh`
+does it for you. On an existing install, once, after `asf update`:
+
+```bash
+scripts/asf secret-key     # adds ASF_SECRET_KEY to .env; the registry encrypts on restart
+scripts/asf doctor         # "saved tokens: N encrypted at rest (key …)"
+```
+
+Until then nothing breaks; `asf doctor` just warns that they're plaintext. To rotate
+the key later: `scripts/asf secret-key --rotate`. Details:
+[`PROVIDERS.md`](PROVIDERS.md#encryption-at-rest).
+
 ## Back up before a big jump, and restoring
 
 Migrations are additive, but a backup before a major update is cheap insurance:
@@ -132,6 +146,11 @@ The stack also writes a **nightly** `pg_dump` (14-day retention) via the `backup
 container. Sync `./backups` (or the `backups` volume) offsite — see
 [`SELF_HOSTING.md`](SELF_HOSTING.md).
 
+**Back up `.env` too, somewhere else.** Tokens saved in Settings are encrypted with
+its `ASF_SECRET_KEY`; a dump restored without that key comes back with those tokens
+unreadable (you'd re-enter them in Settings). `asf restore` checks the dump's key
+against `.env` before it replaces anything.
+
 To restore a dump — this **replaces all current data** and is double-checked before
 it runs:
 
@@ -140,7 +159,7 @@ scripts/asf restore ./backups/asf-YYYY-MM-DD.sql.gz
 ```
 
 It stops the app tier, resets the schema, loads the dump, and brings the stack back
-up. **Test a restore once** so you know it works before you need it.
+up, then fails loudly if any restored token can't be decrypted with this stack's key. **Test a restore once** so you know it works before you need it.
 
 ## Rolling back
 

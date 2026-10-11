@@ -10,6 +10,15 @@ export class RunConflict extends Error {
   constructor(public readonly existingRunId: string, reason: string) { super(reason); }
 }
 
+/**
+ * A saved token exists but the registry can't decrypt it (#9): ASF_SECRET_KEY is
+ * missing or is not the key it was saved with. Distinct from "not set" — the fix
+ * is restoring the key, not pasting a new token over a good one.
+ */
+export class SavedSecretUnreadable extends Error {
+  constructor(reason: string) { super(reason); this.name = 'SavedSecretUnreadable'; }
+}
+
 async function rpc<K extends RpcRequest['op']>(body: Extract<RpcRequest, { op: K }>): Promise<RpcResults[K]> {
   const res = await fetch(`${config.registryUrl}/internal/rpc`, {
     method: 'POST',
@@ -17,6 +26,7 @@ async function rpc<K extends RpcRequest['op']>(body: Extract<RpcRequest, { op: K
     body: JSON.stringify(body),
   });
   const json = (await res.json()) as { ok?: boolean; result?: unknown; error?: string; reason?: string; existingRunId?: string };
+  if (res.status === 409 && json.error === 'secret_key_error') throw new SavedSecretUnreadable(json.reason ?? 'saved token cannot be decrypted (ASF_SECRET_KEY)');
   if (res.status === 409 && json.error === 'run_conflict') throw new RunConflict(json.existingRunId ?? 'unknown', json.reason ?? 'run conflict');
   // A 401 means the shared X-Run-Secret does not match between the api and the registry.
   const hint = res.status === 401 ? ' — RUN_EVENT_SECRET mismatch: set the same value in .env for registry, api and worker and restart all three' : '';

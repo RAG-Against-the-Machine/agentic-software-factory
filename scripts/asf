@@ -52,6 +52,8 @@ Usage: scripts/asf <command> [args]
                      (--from-source: git pull --ff-only + rebuild locally)
   backup             immediate pg_dump into the backups volume and ./backups
   restore <file>     restore the database from a .sql.gz dump
+  secret-key         add ASF_SECRET_KEY to .env and encrypt saved tokens
+                     (--rotate: move every saved token to a fresh key)
   reset --yes        DESTROY all data and volumes (double-confirmed)
   open               open the UI in a browser
   help               this help
@@ -85,6 +87,35 @@ api_check() { # $1 = path, $2 = js body returning a string ; prints result
       .then(j => { process.stdout.write(String(extract(j))); })
       .catch(e => { process.stdout.write("ERR|" + ((e && e.message) || e)); process.exit(1); });
   ' "$1" "$2" 2>/dev/null || true
+}
+
+# Saved-token encryption state from the registry's /health (#9), as
+# "state|keyId|total|plaintext|undecryptable"; "ERR|..." when unreachable.
+secrets_status() {
+  compose exec -T registry node -e '
+    fetch("http://127.0.0.1:8788/health").then(r => r.json()).then(j => {
+      const s = j.secrets;
+      process.stdout.write(s ? [s.state, s.keyId || "", s.total, s.plaintext, s.undecryptable].join("|") : "ERR|no secrets field (registry older than #9?)");
+    }).catch(e => { process.stdout.write("ERR|" + ((e && e.message) || e)); });
+  ' 2>/dev/null || printf 'ERR|registry not reachable'
+}
+
+# Key fingerprints (#9) without the registry: the 8-hex keyId the registry stamps
+# on each envelope = sha256("asf-org-secret-key-id:" || key bytes). Blank when the
+# key is unset or not hex (setup and secret-key always write hex).
+env_key_id() { # $1 = .env key
+  local hex; hex="$(read_env_key "$ENV_FILE" "$1" 2>/dev/null || true)"
+  printf '%s' "$hex" | grep -Eq '^[0-9a-fA-F]{64}$' || return 0
+  command -v openssl >/dev/null 2>&1 || return 0
+  { printf 'asf-org-secret-key-id:'; printf "$(printf '%s' "$hex" | sed 's/../\\x&/g')"; } \
+    | openssl dgst -sha256 2>/dev/null | sed 's/^.*= *//' | cut -c1-8
+}
+
+# The distinct keyIds the saved tokens in a dump were encrypted with (blank for
+# a dump with none: pre-#9, no key, or no saved tokens).
+dump_key_ids() { # $1 = .sql.gz
+  { gunzip -c "$1" 2>/dev/null || true; } | { grep -o 'enc:v1:[0-9a-f]\{8\}:' || true; } \
+    | cut -d: -f3 | sort -u | tr '\n' ' ' | sed 's/ $//'
 }
 
 # --- subcommands ------------------------------------------------------------
@@ -198,12 +229,33 @@ cmd_backup() {
   compose cp "backup:${remote}" "$BACKUP_DIR/${name}"
   ok "wrote ${remote} (backups volume)"
   ok "copied to ${BACKUP_DIR}/${name}"
+  local st; st="$(secrets_status)"
+  case "${st%%|*}" in
+    encrypted) info "saved tokens in this dump are encrypted with ASF_SECRET_KEY (key $(printf '%s' "$st" | cut -d'|' -f2))."
+               info "keep a copy of .env (ASF_SECRET_KEY) apart from your backups: without it a restore loses the tokens." ;;
+    plaintext|key-mismatch) warn "this dump holds saved tokens that are not encrypted with the current key — treat the file as a secret" "asf secret-key" ;;
+  esac
 }
 
 cmd_restore() {
   local file="${1:-}"
   [ -n "$file" ] || die "usage: asf restore <file.sql.gz>"
   [ -f "$file" ] || die "no such file: $file"
+  # Saved tokens (#9): which key(s) the dump's tokens were encrypted with, vs the
+  # key this stack has now. Checked BEFORE anything is dropped.
+  gunzip -t "$file" 2>/dev/null || die "${file} is not a readable .sql.gz"
+  local dump_keys have_keys missing="" k
+  dump_keys="$(dump_key_ids "$file")"
+  have_keys="$(env_key_id ASF_SECRET_KEY) $(env_key_id ASF_SECRET_KEY_PREVIOUS)"
+  for k in $dump_keys; do
+    case " $have_keys " in *" $k "*) ;; *) missing="${missing:+$missing }$k" ;; esac
+  done
+  if [ -n "$missing" ]; then
+    warn "the dump has saved tokens encrypted with key ${missing}, which is not the ASF_SECRET_KEY in .env (key $(env_key_id ASF_SECRET_KEY | sed 's/^$/not set/'))" \
+      "put that key in .env as ASF_SECRET_KEY (or ASF_SECRET_KEY_PREVIOUS) first, or re-enter the tokens in Settings after the restore"
+    confirm "Restore anyway? Those saved tokens will be unreadable until the matching key is in .env." \
+      || { info "aborted"; return 0; }
+  fi
   confirm "Restore the database from ${file}? This REPLACES all current data." \
     || { info "aborted"; return 0; }
   section "Restore"
@@ -217,7 +269,76 @@ cmd_restore() {
   gunzip -c "$file" | compose exec -T backup sh -c 'psql -h postgres -U asf -d asf -q'
   info "restarting the stack"
   compose up -d
+  wait_healthy registry "registry" 120 || return 1
+  local st; st="$(secrets_status)"
+  case "${st%%|*}" in
+    key-mismatch) bad "restored, but $(printf '%s' "$st" | cut -d'|' -f5) saved token(s) can't be decrypted with ASF_SECRET_KEY" \
+                    "put the key they were saved with in .env as ASF_SECRET_KEY (or ASF_SECRET_KEY_PREVIOUS), then asf restart registry; or re-enter them in Settings"
+                  return 1 ;;
+    plaintext)    warn "restored; saved tokens are in plaintext" "asf secret-key" ;;
+  esac
   ok "restore complete"
+}
+
+# Saved-token encryption (#9). Adds ASF_SECRET_KEY to .env (never replaces one)
+# and recreates the registry, which encrypts every saved token at boot.
+# --rotate: the current key becomes ASF_SECRET_KEY_PREVIOUS, a fresh key becomes
+# current, the registry re-encrypts, and the old key is dropped from .env only
+# after the registry has proven every token opens with the new key alone.
+cmd_secret_key() {
+  section "Saved-token encryption key"
+  [ -f "$ENV_FILE" ] || die ".env missing — run scripts/setup.sh"
+  local rotate=0 cur prev st
+  [ "${1:-}" = "--rotate" ] && rotate=1
+  cur="$(read_env_key "$ENV_FILE" ASF_SECRET_KEY)"
+  prev="$(read_env_key "$ENV_FILE" ASF_SECRET_KEY_PREVIOUS)"
+  if [ "$rotate" -eq 1 ]; then
+    [ -n "$cur" ] || die "no ASF_SECRET_KEY to rotate — run asf secret-key first"
+    [ -z "$prev" ] || die "ASF_SECRET_KEY_PREVIOUS is already set (an unfinished rotation?) — check asf doctor, then remove it from .env"
+    st="$(secrets_status)"
+    [ "${st%%|*}" != "key-mismatch" ] || die "some saved tokens already can't be decrypted — fix that first (asf doctor)"
+    cp "$ENV_FILE" "$ENV_FILE.bak"; chmod 600 "$ENV_FILE.bak"
+    set_env_key "$ENV_FILE" ASF_SECRET_KEY_PREVIOUS "$cur"
+    set_env_key "$ENV_FILE" ASF_SECRET_KEY "$(rand_hex 32)"
+    ok "new ASF_SECRET_KEY written; the old key is ASF_SECRET_KEY_PREVIOUS until every token is moved (.env.bak has the old .env)"
+  elif [ -n "$cur" ]; then
+    ok "ASF_SECRET_KEY already set in .env — keeping it (use --rotate for a new key)"
+  else
+    set_env_key "$ENV_FILE" ASF_SECRET_KEY "$(rand_hex 32)"
+    ok "added ASF_SECRET_KEY to .env"
+  fi
+  chmod 600 "$ENV_FILE"
+
+  info "recreating the registry so it picks up the key (runs keep going)"
+  compose up -d --no-deps registry >/dev/null 2>&1 || die "could not recreate the registry (asf logs registry)"
+  wait_healthy registry "registry" 120 || return 1
+  st="$(secrets_status)"
+  if [ "$rotate" -eq 1 ]; then
+    if [ "${st%%|*}" != "encrypted" ] && [ "${st%%|*}" != "none" ]; then
+      bad "rotation did not finish: saved tokens are ${st%%|*}" "asf logs registry; .env still has both keys, nothing is lost"
+      return 1
+    fi
+    set_env_key "$ENV_FILE" ASF_SECRET_KEY_PREVIOUS ""
+    compose up -d --no-deps registry >/dev/null 2>&1 || die "could not recreate the registry (asf logs registry)"
+    wait_healthy registry "registry" 120 || return 1
+    st="$(secrets_status)"
+    if [ "${st%%|*}" != "encrypted" ] && [ "${st%%|*}" != "none" ]; then
+      set_env_key "$ENV_FILE" ASF_SECRET_KEY_PREVIOUS "$cur"
+      compose up -d --no-deps registry >/dev/null 2>&1 || true
+      bad "some tokens still need the old key — put it back as ASF_SECRET_KEY_PREVIOUS" "asf logs registry"
+      return 1
+    fi
+    ok "every saved token is on the new key; ASF_SECRET_KEY_PREVIOUS removed"
+  fi
+  case "${st%%|*}" in
+    encrypted)    ok "saved tokens: $(printf '%s' "$st" | cut -d'|' -f3) encrypted at rest (key $(printf '%s' "$st" | cut -d'|' -f2))" ;;
+    none)         ok "no saved tokens yet; new ones will be encrypted (key $(printf '%s' "$st" | cut -d'|' -f2))" ;;
+    key-mismatch) bad "$(printf '%s' "$st" | cut -d'|' -f5) saved token(s) can't be decrypted with this key" \
+                    "they were saved under a different key: restore it as ASF_SECRET_KEY_PREVIOUS, or re-enter them in Settings"
+                  return 1 ;;
+    *)            warn "could not confirm the saved-token state: ${st#*|}" "asf doctor" ;;
+  esac
+  info "back up .env (it holds ASF_SECRET_KEY) apart from your database backups."
 }
 
 cmd_reset() {
@@ -275,6 +396,11 @@ cmd_doctor() {
       *"#"*)    warn "RUN_EVENT_SECRET has an inline '#' — env_file keeps it literally" "remove the trailing comment from the line" ;;
       *)        ok "RUN_EVENT_SECRET set" ;;
     esac
+    case "$(read_env_key "$ENV_FILE" ASF_SECRET_KEY)" in
+      "")       warn "ASF_SECRET_KEY is empty: tokens saved in Settings are stored in plaintext" "asf secret-key" ;;
+      *"***"*)  bad "ASF_SECRET_KEY looks masked (contains ***)" "paste the real key into .env" ;;
+      *)        ok "ASF_SECRET_KEY set (saved tokens encrypted at rest)" ;;
+    esac
   fi
 
   if [ "$docker_ok" -ne 1 ]; then
@@ -321,6 +447,18 @@ cmd_doctor() {
   else bad "registry /health failed" "asf logs registry"; fi
   if node_fetch api http://127.0.0.1:8787/health >/dev/null 2>&1; then ok "api /health ok"
   else bad "api /health failed" "asf logs api"; fi
+  local sst stotal
+  sst="$(secrets_status)"; stotal="$(printf '%s' "$sst" | cut -d'|' -f3)"
+  case "${sst%%|*}" in
+    none)         ok "saved tokens: none yet" ;;
+    encrypted)    ok "saved tokens: ${stotal} encrypted at rest (key $(printf '%s' "$sst" | cut -d'|' -f2))"
+                  [ -n "$(read_env_key "$ENV_FILE" ASF_SECRET_KEY_PREVIOUS)" ] && info "ASF_SECRET_KEY_PREVIOUS can be removed from .env (every token is on the new key)" ;;
+    plaintext)    warn "saved tokens: $(printf '%s' "$sst" | cut -d'|' -f4) of ${stotal} stored in PLAINTEXT" \
+                    "asf secret-key (or, if ASF_SECRET_KEY is already set: asf restart registry)" ;;
+    key-mismatch) bad "saved tokens: $(printf '%s' "$sst" | cut -d'|' -f5) of ${stotal} can't be decrypted with ASF_SECRET_KEY (key $(printf '%s' "$sst" | cut -d'|' -f2))" \
+                    "put the key they were saved with in .env (as ASF_SECRET_KEY or ASF_SECRET_KEY_PREVIOUS), then asf restart registry; or re-enter them in Settings" ;;
+    *)            warn "saved tokens: state unknown (${sst#*|})" "asf logs registry" ;;
+  esac
 
   section "Providers"
   local res kind rest
@@ -433,6 +571,7 @@ case "$cmd" in
   update)   cmd_update "$@" ;;
   backup)   cmd_backup "$@" ;;
   restore)  cmd_restore "$@" ;;
+  secret-key) cmd_secret_key "$@" ;;
   reset)    cmd_reset "$@" ;;
   open)     cmd_open "$@" ;;
   help|-h|--help) usage ;;

@@ -16,6 +16,8 @@ Every decision is a named setting resolved **environment variable > org setting 
 | `REGISTRY_HOST` | string | `127.0.0.1` | env | registry | Bind address. 127.0.0.1 locally; 0.0.0.0 in a container (set automatically when PORT is present). |
 | `REGISTRY_URL` | string | `http://127.0.0.1:8788` | env | api, worker | Where the api and worker reach the registry. The ONE value a shared deployment changes. |
 | `RUN_EVENT_SECRET` | string | *(secret)* | env | registry, api, worker | Shared machine secret (X-Run-Secret) between registry, api and worker. Must be identical on all three. Generated at boot when blank — fine on one machine, useless across hosts. |
+| `ASF_SECRET_KEY` | string | *(secret)* | env | registry | Encrypts tokens saved through Settings (the org_secret table) at rest with AES-256-GCM: 32 random bytes as 64 hex characters (`openssl rand -hex 32`; setup.sh and `asf secret-key` generate it). Registry only — never give it to the api or worker. Back it up separately from the database: a restore without it loses every saved token. Blank = tokens stay plaintext and doctor warns. |
+| `ASF_SECRET_KEY_PREVIOUS` | string | *(secret)* | env | registry | Key rotation: the OLD ASF_SECRET_KEY. At boot the registry re-encrypts every saved token from this key to ASF_SECRET_KEY; remove it once doctor shows all tokens on the new key. |
 | `STALE_AFTER_MIN` | number | `15` | env, org | registry | Minutes of silence before a running run is marked stale (resumable). |
 | `WORKER_TTL_SECONDS` | number | `90` | env, org | registry | Seconds since last heartbeat before a worker is forgotten and its runs staled. |
 | `RECONCILE_INTERVAL_MS` | number | `60000` | env | registry | How often the sweeper looks. |

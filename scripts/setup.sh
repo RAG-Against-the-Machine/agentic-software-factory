@@ -266,6 +266,15 @@ if [ -f "$ENV_FILE" ] && [ "$FORCE" -ne 1 ]; then
   [ -n "$ASF_PORT_VALUE" ] || ASF_PORT_VALUE="$DEFAULT_PORT"
   ok ".env already present — keeping it (use --force to regenerate)"
   info "port from .env: ${ASF_PORT_VALUE}"
+  # Upgrade path for #9: an .env from before saved-token encryption gets a key, so
+  # the registry encrypts the tokens already saved in Settings on its next boot.
+  # An existing key is NEVER replaced — that would orphan every saved token.
+  if [ -z "$(read_env_key "$ENV_FILE" ASF_SECRET_KEY)" ]; then
+    set_env_key "$ENV_FILE" ASF_SECRET_KEY "$(rand_hex 32)"
+    chmod 600 "$ENV_FILE"
+    ok "added ASF_SECRET_KEY to .env (encrypts tokens saved in Settings)"
+    info "back up .env separately from database backups: a restore without this key loses the saved tokens"
+  fi
 else
   [ -f "$EXAMPLE" ] || { printf '%s.env.example missing — is this an ASF checkout?%s\n' "$C_RED" "$C_RESET" >&2; exit 1; }
 
@@ -289,11 +298,19 @@ else
 
   RUN_EVENT_SECRET_VALUE="$(rand_hex 32)"
   POSTGRES_PASSWORD_VALUE="$(rand_hex 16)"
+  # Encrypts tokens saved in Settings at rest (#9). --force keeps an existing key:
+  # a new one would make every token already in the database unreadable.
+  SECRET_KEY_VALUE="$(read_env_key "$ENV_FILE" ASF_SECRET_KEY)"
+  [ -n "$SECRET_KEY_VALUE" ] || SECRET_KEY_VALUE="$(rand_hex 32)"
+  # ...and an unfinished rotation's old key, or the tokens still on it are lost.
+  SECRET_KEY_PREVIOUS_VALUE="$(read_env_key "$ENV_FILE" ASF_SECRET_KEY_PREVIOUS)"
 
   TMP_ENV="$(mktemp)"
   cp "$EXAMPLE" "$TMP_ENV"
   set_env_key "$TMP_ENV" RUN_EVENT_SECRET "$RUN_EVENT_SECRET_VALUE"
   set_env_key "$TMP_ENV" POSTGRES_PASSWORD "$POSTGRES_PASSWORD_VALUE"
+  set_env_key "$TMP_ENV" ASF_SECRET_KEY "$SECRET_KEY_VALUE"
+  [ -z "$SECRET_KEY_PREVIOUS_VALUE" ] || set_env_key "$TMP_ENV" ASF_SECRET_KEY_PREVIOUS "$SECRET_KEY_PREVIOUS_VALUE"
   set_env_key "$TMP_ENV" ASF_PORT "$ASF_PORT_VALUE"
   # The day-2 CLI (scripts/asf) reads the mode from .env to decide, e.g., whether
   # `up` also starts a host worker (mode 2).
@@ -315,6 +332,7 @@ else
   ok "wrote .env (chmod 600)"
   printf '    %s%-18s %s%s\n' "$C_DIM" "RUN_EVENT_SECRET" "$(mask "$RUN_EVENT_SECRET_VALUE")" "$C_RESET"
   printf '    %s%-18s %s%s\n' "$C_DIM" "POSTGRES_PASSWORD" "$(mask "$POSTGRES_PASSWORD_VALUE")" "$C_RESET"
+  printf '    %s%-18s %s%s\n' "$C_DIM" "ASF_SECRET_KEY" "$(mask "$SECRET_KEY_VALUE") (back up .env: database backups need it)" "$C_RESET"
   printf '    %s%-18s %s%s\n' "$C_DIM" "ASF_PORT" "$ASF_PORT_VALUE" "$C_RESET"
   printf '    %s%-18s %s%s\n' "$C_DIM" "AUTH_MODE" "none" "$C_RESET"
   printf '    %s%-18s %s%s\n' "$C_DIM" "TICKET_PROVIDER" "(blank — set in the web UI)" "$C_RESET"

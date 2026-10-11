@@ -41,6 +41,7 @@ out="$(run_asf help 2>&1)"; code=$?
 assert_eq "$code" "0" "help exits 0"
 assert_contains "$out" "Usage: scripts/asf" "help prints usage"
 assert_contains "$out" "doctor" "help lists the doctor command"
+assert_contains "$out" "secret-key" "help lists the secret-key command"
 
 # default (no args) also shows help and exits 0
 out="$(run_asf 2>&1)"; code=$?
@@ -56,6 +57,126 @@ assert_contains "$out" "unknown command: bogus" "unknown command names itself"
 # It has no run secret, so a gated route answers 401 and the check misreports.
 gated="$(grep -oE "api_check /api/(agent-auth|runs/[^ ]*/(context|events|cancel-requested))" "$ASF" || true)"
 assert_eq "$gated" "" "doctor does not query secret-gated api routes"
+
+# --- secret-key (#9) against a fake docker --------------------------------------
+# The fake answers `compose exec registry node …` (the /health secrets probe) from
+# a queue of states, reports every container healthy, and logs every call.
+FAKE_DOCKER_BIN="$(mktemp -d)"
+cat > "$FAKE_DOCKER_BIN/docker" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_LOG"
+case "$*" in
+  *" exec -T registry node "*)
+    line="$(head -1 "$FAKE_STATES")"; rest="$(tail -n +2 "$FAKE_STATES")"
+    [ -n "$rest" ] && printf '%s\n' "$rest" > "$FAKE_STATES"
+    printf '%s' "$line" ;;
+  *" ps -q "*) echo cid123 ;;
+  inspect*) echo healthy ;;
+esac
+exit 0
+EOF
+chmod +x "$FAKE_DOCKER_BIN/docker"
+run_asf_fd() { ( cd "$FAKE_ROOT" && PATH="$FAKE_DOCKER_BIN:/usr/bin:/bin" NO_COLOR=1 FAKE_LOG="$FAKE_ROOT/docker.log" FAKE_STATES="$FAKE_ROOT/states" "$FAKE_ROOT/scripts/asf" "$@" ); }
+envget() { awk -F= -v k="$1" '$1==k{print substr($0, length(k)+2)}' "$FAKE_ROOT/.env" | tail -1; }
+
+out="$(run_asf_fd secret-key 2>&1)"; code=$?
+assert_eq "$code" "1" "secret-key without .env fails"
+assert_contains "$out" ".env missing" "secret-key names the missing .env"
+
+printf 'ASF_PORT=8787\nRUN_EVENT_SECRET=abc\nASF_SECRET_KEY=\n' > "$FAKE_ROOT/.env"; chmod 644 "$FAKE_ROOT/.env"
+printf 'encrypted|1a2b3c4d|3|0|0\n' > "$FAKE_ROOT/states"; : > "$FAKE_ROOT/docker.log"
+out="$(run_asf_fd secret-key 2>&1)"; code=$?
+assert_eq "$code" "0" "secret-key succeeds"
+k1="$(envget ASF_SECRET_KEY)"
+assert_eq "${#k1}" "64" "secret-key writes a 64-hex ASF_SECRET_KEY"
+assert_eq "$(envget RUN_EVENT_SECRET)" "abc" "secret-key leaves other keys alone"
+perm="$(stat -c '%a' "$FAKE_ROOT/.env" 2>/dev/null || stat -f '%Lp' "$FAKE_ROOT/.env")"
+assert_eq "$perm" "600" "secret-key leaves .env chmod 600"
+assert_contains "$(cat "$FAKE_ROOT/docker.log")" "up -d --no-deps registry" "secret-key recreates only the registry"
+assert_contains "$out" "3 encrypted at rest (key 1a2b3c4d)" "secret-key reports the encrypted tokens"
+case "$out" in *"$k1"*) fail "secret-key must not print the key" ;; *) pass ;; esac
+
+out="$(run_asf_fd secret-key 2>&1)"; code=$?
+assert_eq "$(envget ASF_SECRET_KEY)" "$k1" "secret-key never replaces an existing key"
+assert_contains "$out" "keeping it" "secret-key says it kept the key"
+
+printf 'encrypted|99aa88bb|3|0|0\n' > "$FAKE_ROOT/states"; : > "$FAKE_ROOT/docker.log"
+out="$(run_asf_fd secret-key --rotate 2>&1)"; code=$?
+assert_eq "$code" "0" "rotate succeeds"
+k2="$(envget ASF_SECRET_KEY)"
+[ "$k2" != "$k1" ] && [ "${#k2}" = "64" ] && pass || fail "rotate writes a fresh key"
+assert_eq "$(envget ASF_SECRET_KEY_PREVIOUS)" "" "rotate removes the previous key once the registry proves it unneeded"
+assert_eq "$(grep -c 'up -d --no-deps registry' "$FAKE_ROOT/docker.log")" "2" "rotate restarts the registry twice (move, then prove)"
+assert_contains "$out" "every saved token is on the new key" "rotate reports success"
+
+# rotate where the proof fails: the old key goes back as PREVIOUS, nothing is lost
+printf 'encrypted|11112222|3|0|0\nencrypted|11112222|3|0|0\nkey-mismatch|11112222|3|0|1\n' > "$FAKE_ROOT/states"
+out="$(run_asf_fd secret-key --rotate 2>&1)"; code=$?
+assert_eq "$code" "1" "rotate fails when a token still needs the old key"
+assert_eq "$(envget ASF_SECRET_KEY_PREVIOUS)" "$k2" "the old key is restored as ASF_SECRET_KEY_PREVIOUS"
+
+printf 'ASF_PORT=8787\nRUN_EVENT_SECRET=abc\nASF_SECRET_KEY=x\nASF_SECRET_KEY_PREVIOUS=y\n' > "$FAKE_ROOT/.env"
+out="$(run_asf_fd secret-key --rotate 2>&1)"; code=$?
+assert_eq "$code" "1" "rotate refuses while a previous rotation is unfinished"
+rm -f "$FAKE_ROOT/.env" "$FAKE_ROOT/states" "$FAKE_ROOT/docker.log" "$FAKE_ROOT/.env.bak"; rm -rf "$FAKE_DOCKER_BIN"
+
+# --- restore (#9): key pre-check against .env, post-check against /health -------
+FAKE_DOCKER_BIN="$(mktemp -d)"
+cat > "$FAKE_DOCKER_BIN/docker" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_LOG"
+case "$*" in
+  *" exec -T registry node "*) head -1 "$FAKE_STATES" | tr -d '\n' ;;
+  *" exec -T backup "*) cat >/dev/null ;;
+  *" ps -q "*) echo cid123 ;;
+  inspect*) echo healthy ;;
+esac
+exit 0
+EOF
+chmod +x "$FAKE_DOCKER_BIN/docker"
+keyid() { { printf 'asf-org-secret-key-id:'; printf "$(printf '%s' "$1" | sed 's/../\\x&/g')"; } | openssl dgst -sha256 | sed 's/^.*= *//' | cut -c1-8; }
+K1="$(openssl rand -hex 32)"; K2="$(openssl rand -hex 32)"
+ID1="$(keyid "$K1")"; ID2="$(keyid "$K2")"
+printf 'COPY public.org_secret (name, value) FROM stdin;\nGITHUB_TOKEN\tplain\n\\.\n' | gzip > "$FAKE_ROOT/plain.sql.gz"
+printf 'COPY public.org_secret (name, value) FROM stdin;\nGITHUB_TOKEN\tenc:v1:%s:aXY=:dGFn:Y3Q=\n\\.\n' "$ID1" | gzip > "$FAKE_ROOT/k1.sql.gz"
+printf 'not gzip' > "$FAKE_ROOT/bad.sql.gz"
+
+printf 'ASF_PORT=8787\nASF_SECRET_KEY=%s\n' "$K1" > "$FAKE_ROOT/.env"; chmod 600 "$FAKE_ROOT/.env"
+printf 'plaintext|%s|1|1|0\n' "$ID1" > "$FAKE_ROOT/states"; : > "$FAKE_ROOT/docker.log"
+out="$(run_asf_fd restore plain.sql.gz </dev/null 2>&1)"; code=$?
+assert_eq "$code" "0" "restore of a pre-#9 (plaintext) dump succeeds"
+assert_contains "$(cat "$FAKE_ROOT/docker.log")" "exec -T backup" "restore actually loads a plaintext dump"
+assert_contains "$out" "saved tokens are in plaintext" "restore points a plaintext restore at asf secret-key"
+
+printf 'encrypted|%s|1|0|0\n' "$ID1" > "$FAKE_ROOT/states"
+out="$(run_asf_fd restore k1.sql.gz </dev/null 2>&1)"; code=$?
+assert_eq "$code" "0" "restore with the matching key succeeds"
+case "$out" in *"not the ASF_SECRET_KEY"*) fail "matching key must not warn" ;; *) pass ;; esac
+
+printf 'ASF_PORT=8787\nASF_SECRET_KEY=%s\nASF_SECRET_KEY_PREVIOUS=%s\n' "$K2" "$K1" > "$FAKE_ROOT/.env"
+out="$(run_asf_fd restore k1.sql.gz </dev/null 2>&1)"; code=$?
+case "$out" in *"not the ASF_SECRET_KEY"*) fail "a key in ASF_SECRET_KEY_PREVIOUS counts as present" ;; *) pass ;; esac
+
+printf 'ASF_PORT=8787\nASF_SECRET_KEY=%s\n' "$K2" > "$FAKE_ROOT/.env"
+printf 'key-mismatch|%s|1|0|1\n' "$ID2" > "$FAKE_ROOT/states"
+out="$(run_asf_fd restore k1.sql.gz </dev/null 2>&1)"; code=$?
+assert_contains "$out" "encrypted with key ${ID1}, which is not the ASF_SECRET_KEY in .env (key ${ID2})" "restore names both keys before replacing anything"
+assert_eq "$code" "1" "restore fails loudly when restored tokens can't be decrypted"
+assert_contains "$out" "can't be decrypted" "restore explains the post-check failure"
+case "$out" in *"$K1"*|*"$K2"*) fail "restore must never print a key" ;; *) pass ;; esac
+
+: > "$FAKE_ROOT/docker.log"
+out="$(run_asf_fd restore bad.sql.gz </dev/null 2>&1)"; code=$?
+assert_eq "$code" "1" "restore refuses a corrupt dump"
+assert_eq "$(cat "$FAKE_ROOT/docker.log")" "" "a corrupt dump touches nothing"
+rm -f "$FAKE_ROOT"/*.sql.gz "$FAKE_ROOT/.env" "$FAKE_ROOT/states" "$FAKE_ROOT/docker.log"; rm -rf "$FAKE_DOCKER_BIN"
+
+# --- doctor flags an empty ASF_SECRET_KEY (even with docker absent) ------------
+printf 'ASF_PORT=8787\nRUN_EVENT_SECRET=abc\nASF_SECRET_KEY=\n' > "$FAKE_ROOT/.env"; chmod 600 "$FAKE_ROOT/.env"
+out="$(run_asf doctor 2>&1)"
+assert_contains "$out" "ASF_SECRET_KEY is empty" "doctor warns about plaintext saved tokens"
+assert_contains "$out" "asf secret-key" "doctor's fix points at asf secret-key"
+rm -f "$FAKE_ROOT/.env"
 
 # --- doctor with no docker: reports the docker ✗ and exits non-zero ---------
 out="$(run_asf doctor 2>&1)"; code=$?

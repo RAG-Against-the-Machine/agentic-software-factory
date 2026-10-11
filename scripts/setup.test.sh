@@ -103,6 +103,9 @@ assert_eq "${#secret}" "64" "RUN_EVENT_SECRET is 32 bytes of hex"
 pw="$(get POSTGRES_PASSWORD)"
 assert_eq "${#pw}" "32" "POSTGRES_PASSWORD is 16 bytes of hex"
 assert_not_contains "$(get DATABASE_URL)" "$pw" "mode 1 does not touch DATABASE_URL"
+skey="$(get ASF_SECRET_KEY)"
+assert_eq "${#skey}" "64" "ASF_SECRET_KEY is 32 bytes of hex (#9)"
+assert_not_contains "$out" "$skey" "the secret key is never printed in full"
 
 # --- re-run without --force: idempotent no-op reconcile ------------------
 before="$(cat "$FAKE_ROOT/.env")"
@@ -118,6 +121,26 @@ assert_eq "$code" "0" "--force re-run succeeds"
 [ -f "$FAKE_ROOT/.env.bak" ] && pass || fail "--force backs up the previous .env"
 new_secret="$(get RUN_EVENT_SECRET)"
 [ "$new_secret" != "$secret" ] && pass || fail "--force regenerates RUN_EVENT_SECRET"
+assert_eq "$(get ASF_SECRET_KEY)" "$skey" "--force KEEPS ASF_SECRET_KEY (a new key would orphan saved tokens)"
+
+# --- upgrade: an .env from before #9 gets a key on re-run; nothing else changes
+grep -v '^ASF_SECRET_KEY=' "$FAKE_ROOT/.env" > "$FAKE_ROOT/.env.old" && cp "$FAKE_ROOT/.env.old" "$FAKE_ROOT/.env" && rm -f "$FAKE_ROOT/.env.old"
+before_up="$(grep -v '^ASF_SECRET_KEY=' "$FAKE_ROOT/.env")"
+out="$(ASF_MODE=1 ASF_PORT=9123 run_setup --non-interactive --no-up 2>&1)"; code=$?
+assert_eq "$code" "0" "re-run on a pre-#9 .env succeeds"
+assert_contains "$out" "added ASF_SECRET_KEY" "re-run reports the added key"
+up_key="$(get ASF_SECRET_KEY)"
+assert_eq "${#up_key}" "64" "re-run adds a 64-hex ASF_SECRET_KEY"
+assert_eq "$(grep -v '^ASF_SECRET_KEY=' "$FAKE_ROOT/.env")" "$before_up" "re-run changes nothing but the added key"
+perm_up="$(stat -c '%a' "$FAKE_ROOT/.env" 2>/dev/null || stat -f '%Lp' "$FAKE_ROOT/.env")"
+assert_eq "$perm_up" "600" ".env stays chmod 600 after adding the key"
+
+# --- --force mid-rotation keeps ASF_SECRET_KEY_PREVIOUS too
+printf 'ASF_SECRET_KEY_PREVIOUS=%s\n' "$skey" >> "$FAKE_ROOT/.env"
+out="$(ASF_MODE=1 ASF_PORT=9123 run_setup --non-interactive --no-up --force 2>&1)"; code=$?
+assert_eq "$code" "0" "--force mid-rotation succeeds"
+assert_eq "$(get ASF_SECRET_KEY)" "$up_key" "--force mid-rotation keeps ASF_SECRET_KEY"
+assert_eq "$(get ASF_SECRET_KEY_PREVIOUS)" "$skey" "--force mid-rotation keeps ASF_SECRET_KEY_PREVIOUS"
 
 # --- mode 3: DATABASE_URL carries the generated password ------------------
 rm -f "$FAKE_ROOT/.env" "$FAKE_ROOT/.env.bak"

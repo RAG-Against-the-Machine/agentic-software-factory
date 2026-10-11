@@ -37,6 +37,27 @@ read_env_key() { # $1 = file, $2 = key
   printf '%s' "$val"
 }
 
+# --- env-file writer: rewrite (or append) KEY=VALUE, verbatim, comments untouched
+set_env_key() { # $1 = file, $2 = key, $3 = value
+  local file=$1 key=$2 value=$3 line found=0 tmp
+  tmp="$(mktemp)"
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "${line%%=*}" = "$key" ] && [ "${line#"$key"=}" != "$line" ]; then
+      printf '%s=%s\n' "$key" "$value" >> "$tmp"; found=1
+    else
+      printf '%s\n' "$line" >> "$tmp"
+    fi
+  done < "$file"
+  [ "$found" -eq 0 ] && printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  cat "$tmp" > "$file"   # keep the file's inode + chmod 600
+  rm -f "$tmp"
+}
+
+rand_hex() { # $1 = bytes of entropy -> 2*$1 hex chars
+  if command -v openssl >/dev/null 2>&1; then openssl rand -hex "$1"
+  else head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; fi
+}
+
 # --- container health (via docker inspect; no curl in the images) -----------
 container_health() { # $1 = service -> healthy|starting|unhealthy|running|missing|unknown
   local cid

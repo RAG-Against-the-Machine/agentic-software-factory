@@ -103,7 +103,9 @@ export function registerSetupRoutes(app: FastifyInstance, deps: { tickets: Ticke
       done: aiAuth.credentialPresent,
       reason: aiAuth.credentialPresent
         ? `Ready (${aiName}, ${aiAuth.mode})`
-        : `No ${aiName} ${teamAi === 'openai' ? 'API key' : 'credential'} saved yet. Add one in Settings → Which AI should do the work?`,
+        : aiAuth.error
+          ? `Your saved ${aiName} credential can't be read: ${aiAuth.error}`
+          : `No ${aiName} ${teamAi === 'openai' ? 'API key' : 'credential'} saved yet. Add one in Settings → Which AI should do the work?`,
       envPinned: teamAi === 'openai' ? pinned('OPENAI_API_KEY') : pinned('AGENT_AUTH_MODE'),
       // One Claude subscription serving several proxy-authenticated operators is outside
       // Anthropic's terms (docs/CLAUDE_USAGE.md): flag it, never block on it.
