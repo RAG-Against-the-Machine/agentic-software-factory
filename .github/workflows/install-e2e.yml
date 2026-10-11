@@ -18,7 +18,7 @@ jobs:
   containers:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: install (containers mode)
         run: ASF_MODE=containers ASF_PORT=18787 ./scripts/setup.sh --non-interactive
@@ -103,7 +103,7 @@ jobs:
     timeout-minutes: 20
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
         with: { version: 11.20.0 }
       - uses: actions/setup-node@v7
