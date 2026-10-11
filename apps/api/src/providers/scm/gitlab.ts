@@ -1,6 +1,7 @@
 import type {
   ChangeRequest, Preflight, Repo, ReviewComment, ScmProvider,
 } from '@asf/shared';
+import { credentialRejected } from '../rejected.js';
 
 /**
  * GitLab as an ScmProvider, purpose-built to the neutral interface (mirrors
@@ -147,7 +148,7 @@ export class GitlabScmProvider implements ScmProvider {
       // /user (not a search) so a dead token fails outright rather than 200-empty.
       me = await this.gl<{ username: string }>('GET', '/user');
     } catch (e) {
-      if (status(e) === 401) return { ok: false, reason: 'GitLab didn’t accept the access token. It may be mistyped, expired or revoked; create a new one and paste it again.' };
+      if (status(e) === 401) return credentialRejected('GitLab');
       return { ok: false, reason: (e as Error).message };
     }
     // Verify Developer+ (push/merge) on each configured project — a read-only

@@ -2,6 +2,7 @@ import type {
   Preflight, Ticket, TicketBucket, TicketComment, TicketLink, TicketListQuery,
   TicketProvider, TicketProviderCapabilities, TicketTransition,
 } from '@asf/shared';
+import { preflightFailure } from '../rejected.js';
 
 /**
  * GitHub Issues as a TicketProvider. One token (repo + issues scopes) covers
@@ -158,7 +159,7 @@ export class GithubTicketProvider implements TicketProvider {
       for (const rp of this.cfg.repos) await this.gh('GET', `/repos/${rp}`);
       return { ok: true, identity: me.login };
     } catch (e) {
-      return { ok: false, reason: (e as Error).message };
+      return preflightFailure('GitHub', e);
     }
   }
 

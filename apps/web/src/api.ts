@@ -8,7 +8,7 @@ export interface RunsQuery { state?: string; teamName?: string; deliveryOutcome?
 export interface Identity { user: string; verified: boolean; mode: string }
 export interface Fleet extends FleetWire { monthCostUsd: number; monthUnpricedRuns?: number }
 // Mirrors SetupItem/SetupStatus in apps/api/src/routes/setup.ts (the first-run checklist, #83).
-export interface SetupItem { id: string; title: string; done: boolean; optional?: boolean; reason?: string; warning?: string; identity?: string; envPinned?: boolean; link: string }
+export interface SetupItem { id: string; title: string; done: boolean; optional?: boolean; reason?: string; warning?: string; identity?: string; envPinned?: boolean; link: string; problem?: 'credential-rejected' | 'connection-failed' }
 export interface SetupStatus { items: SetupItem[]; complete: boolean }
 // Mirrors apps/api/src/routes/skills.ts: the list sends file sizes, not contents.
 export type SkillSummary = Omit<ThirdPartySkill, 'files'> & { files: { path: string; size: number }[] };

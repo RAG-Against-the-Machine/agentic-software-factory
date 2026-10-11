@@ -106,7 +106,12 @@ export interface TicketProviderCapabilities {
   statuses: boolean;
 }
 
-export type Preflight = { ok: true; identity: string } | { ok: false; reason: string };
+/**
+ * A provider's live connection check. `credentialRejected`: the service answered
+ * 401 to the saved token (revoked, expired, mistyped) — the one failure whose fix
+ * is always "paste a new token", so the UI can say exactly that.
+ */
+export type Preflight = { ok: true; identity: string } | { ok: false; reason: string; credentialRejected?: boolean };
 
 export interface TicketProvider {
   readonly kind: TicketProviderKind;
