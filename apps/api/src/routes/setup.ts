@@ -37,6 +37,12 @@ export interface SetupItem {
   envPinned?: boolean;
   /** Deep link to the panel that resolves this item. */
   link: string;
+  /**
+   * Why a CONFIGURED item is failing (not merely unconfigured): 'credential-rejected'
+   * = the service refused the saved token; 'connection-failed' = any other failed
+   * check. Lets the setup notice name the actual problem.
+   */
+  problem?: 'credential-rejected' | 'connection-failed';
 }
 
 export interface SetupStatus {
@@ -60,7 +66,8 @@ function providerItem(opts: {
   else if (envPinned && isMock) reason = `Pinned to mock by the environment — unset ${key} in the deployment and restart to choose a real provider in Settings.`;
   else if (isMock) reason = mockNote;
   else reason = pf.reason ?? 'Connection test failed — check the details in Settings.';
-  return { id, title, done, reason, identity: done ? pf.identity : undefined, envPinned, link };
+  const problem = !isMock && !pf.ok ? (pf.credentialRejected ? 'credential-rejected' as const : 'connection-failed' as const) : undefined;
+  return { id, title, done, reason, identity: done ? pf.identity : undefined, envPinned, link, ...(problem ? { problem } : {}) };
 }
 
 export function registerSetupRoutes(app: FastifyInstance, deps: { tickets: TicketProviderRegistry; scm: ScmProviderRegistry }): void {

@@ -204,7 +204,7 @@ test('preflight explains a bad token and a missing project in plain words, not r
   try {
     const r = await new GitlabScmProvider(cfg()).preflight();
     assert.equal(r.ok, false);
-    assert.match(r.reason ?? '', /didn’t accept the access token/);
+    assert.match(r.reason ?? '', /rejected the saved access token/);
     assert.doesNotMatch(r.reason ?? '', /\{/);
   } finally { s.restore(); }
   s = stubFetch([

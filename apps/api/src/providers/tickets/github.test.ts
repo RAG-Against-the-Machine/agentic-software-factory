@@ -201,6 +201,30 @@ test('preflight returns login and checks each repo', async () => {
   } finally { s.restore(); }
 });
 
+test('preflight: a revoked/expired token (401) is a plain, flagged failure, not raw JSON', async () => {
+  const s = stubFetch([{ m: 'GET', re: /\/user$/, status: 401, json: { message: 'Bad credentials', status: '401' } }]);
+  try {
+    const r = await new GithubTicketProvider(cfg()).preflight();
+    assert.equal(r.ok, false);
+    assert.equal((r as { credentialRejected?: boolean }).credentialRejected, true);
+    assert.match((r as { reason: string }).reason, /^GitHub rejected the saved access token \(401\)/);
+    assert.doesNotMatch((r as { reason: string }).reason, /Bad credentials|documentation_url/);
+  } finally { s.restore(); }
+});
+
+test('preflight: other failures keep the raw detail and no rejected flag', async () => {
+  const s = stubFetch([
+    { m: 'GET', re: /\/user$/, json: { login: 'octocat' } },
+    { m: 'GET', re: /\/repos\/acme\/widgets$/, status: 404, json: { message: 'Not Found' } },
+  ]);
+  try {
+    const r = await new GithubTicketProvider(cfg()).preflight() as { ok: false; reason: string; credentialRejected?: boolean };
+    assert.equal(r.ok, false);
+    assert.equal(r.credentialRejected, undefined);
+    assert.match(r.reason, /404/);
+  } finally { s.restore(); }
+});
+
 test('assign POSTs the login to /assignees', async () => {
   const s = stubFetch([{ m: 'POST', re: /\/repos\/acme\/widgets\/issues\/42\/assignees$/, json: {} }]);
   try {

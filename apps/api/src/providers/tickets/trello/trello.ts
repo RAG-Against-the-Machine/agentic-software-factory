@@ -2,6 +2,7 @@ import type {
   Preflight, Ticket, TicketBucket, TicketComment, TicketLink, TicketListQuery,
   TicketProvider, TicketProviderCapabilities, TicketTransition,
 } from '@asf/shared';
+import { preflightFailure } from '../../rejected.js';
 
 /**
  * Trello as a TicketProvider. Trello is deliberately UNLIKE Jira/GitHub — it has
@@ -144,7 +145,7 @@ export class TrelloTicketProvider implements TicketProvider {
       for (const b of this.cfg.boards) await this.trello('GET', `/boards/${b}`, { fields: 'id' });
       return { ok: true, identity: me.username };
     } catch (e) {
-      return { ok: false, reason: (e as Error).message };
+      return preflightFailure('Trello', e);
     }
   }
 

@@ -8,7 +8,7 @@ import type { ScmProviderRegistry } from './providers/scm/registry.js';
  * short window: a 10s poll resolves them at most every ~30s.
  */
 
-export type Pf = { ok: boolean; identity?: string; reason?: string };
+export type Pf = { ok: boolean; identity?: string; reason?: string; credentialRejected?: boolean };
 export interface PreflightDeps { tickets: TicketProviderRegistry; scm: ScmProviderRegistry }
 
 const PREFLIGHT_TTL_MS = 30_000;

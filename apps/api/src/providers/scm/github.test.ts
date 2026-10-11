@@ -182,7 +182,7 @@ test('preflight explains a bad token and a missing repository in plain words, no
   try {
     const r = await new GithubScmProvider(cfg()).preflight();
     assert.equal(r.ok, false);
-    assert.match(r.reason ?? '', /didn’t accept the access token/);
+    assert.match(r.reason ?? '', /rejected the saved access token/);
     assert.doesNotMatch(r.reason ?? '', /\{/);
   } finally { s.restore(); }
   s = stubFetch([

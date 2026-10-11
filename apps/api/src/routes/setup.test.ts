@@ -187,3 +187,31 @@ test('no terms warning for a single operator, or for an API key with several', a
     await a.close();
   }
 });
+
+test('a configured provider whose token is rejected is flagged credential-rejected, with the plain reason', async () => {
+  stubRegistry();
+  process.env.TICKET_PROVIDER = 'github';
+  process.env.SCM_PROVIDER = 'github';
+  const reason = 'GitHub rejected the saved access token (401). It was revoked, has expired, or was mistyped: create a new one and paste it in Settings.';
+  const a = await app(
+    new TicketProviderRegistry(async (k) => fakeProvider(k, async () => ({ ok: false, reason, credentialRejected: true })), () => 'github'),
+    new ScmProviderRegistry(async (k) => fakeScm(k, async () => ({ ok: false, reason: 'GitHub can’t find the repository' })), () => 'github'),
+  );
+  const s = status((await a.inject({ method: 'GET', url: '/api/setup/status' })).json());
+  assert.equal(item(s, 'ticket').problem, 'credential-rejected');
+  assert.equal(item(s, 'ticket').reason, reason);
+  assert.equal(item(s, 'scm').problem, 'connection-failed');
+  await a.close();
+});
+
+test('a mock (unconfigured) provider carries no problem flag', async () => {
+  stubRegistry();
+  const a = await app(
+    new TicketProviderRegistry(async (k) => fakeProvider(k, async () => ({ ok: true, identity: 'x' })), () => 'mock'),
+    new ScmProviderRegistry(async (k) => fakeScm(k, async () => ({ ok: true, identity: 'x' })), () => 'mock'),
+  );
+  const s = status((await a.inject({ method: 'GET', url: '/api/setup/status' })).json());
+  assert.equal(item(s, 'ticket').problem, undefined);
+  assert.equal(item(s, 'scm').problem, undefined);
+  await a.close();
+});

@@ -3,6 +3,7 @@ import type {
   TicketProvider, TicketProviderCapabilities, TicketScope, TicketSprint, TicketTransition,
 } from '@asf/shared';
 import { adfToMarkdown, markdownToAdf, adfToText } from './adf.js';
+import { preflightFailure } from '../../rejected.js';
 
 /**
  * Jira Cloud as a TicketProvider. Talks to the REST v3 API directly over fetch
@@ -245,7 +246,7 @@ export class JiraTicketProvider implements TicketProvider {
       const me = await this.jira<{ accountId: string; displayName?: string; emailAddress?: string }>('GET', '/rest/api/3/myself');
       return { ok: true, identity: me.displayName ?? me.emailAddress ?? me.accountId };
     } catch (e) {
-      return { ok: false, reason: (e as Error).message };
+      return preflightFailure('Jira', e);
     }
   }
 

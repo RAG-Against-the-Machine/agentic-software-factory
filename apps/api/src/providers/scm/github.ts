@@ -1,6 +1,7 @@
 import type {
   ChangeRequest, Preflight, Repo, ReviewComment, ScmProvider,
 } from '@asf/shared';
+import { credentialRejected } from '../rejected.js';
 
 /**
  * GitHub as an ScmProvider. Shares GITHUB_TOKEN with the ticket provider (one
@@ -119,7 +120,7 @@ export class GithubScmProvider implements ScmProvider {
     try {
       me = await this.gh<{ login: string }>('GET', '/user');
     } catch (e) {
-      if (status(e) === 401) return { ok: false, reason: 'GitHub didn’t accept the access token. It may be mistyped, expired or revoked; create a new one and paste it again.' };
+      if (status(e) === 401) return credentialRejected('GitHub');
       return { ok: false, reason: (e as Error).message };
     }
     // Verify push access to each configured repo — a read-only token would open a PR then fail to merge.
