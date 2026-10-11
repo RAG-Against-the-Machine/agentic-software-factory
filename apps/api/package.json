@@ -14,6 +14,6 @@
   "dependencies": {
     "@asf/shared": "workspace:*",
     "fastify": "^5.12.5",
-    "@fastify/static": "^8.0.0"
+    "@fastify/static": "^10.1.5"
   }
 }
