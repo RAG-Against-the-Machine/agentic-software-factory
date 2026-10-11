@@ -1,21 +1,43 @@
+# Dependabot, tuned for a small team: one PR per ecosystem per month.
+#
+# - Security fixes are NOT governed by this file's schedule or ignore rules
+#   (update-types ignores apply to version updates only). Dependabot security
+#   updates are enabled in repo settings and open a PR as soon as an alert does.
+# - Routine minor/patch updates arrive as one grouped PR per ecosystem, monthly.
+# - Major versions of npm packages and the Node base image are NOT proposed:
+#   they are migrations (React 19, zod 4, Node 24 LTS...), done deliberately in
+#   their own PR, not by merging a bot bump. @types/node must track the runtime.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
-    schedule: { interval: weekly }
-    open-pull-requests-limit: 5
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 2
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
     groups:
-      minor-and-patch:
+      npm-minor-and-patch:
         update-types: [minor, patch]
+
+  # Actions majors are mostly runtime bumps (Node 20 -> 24); one grouped PR.
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly }
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 1
+    groups:
+      actions:
+        patterns: ["*"]
+
   - package-ecosystem: docker
     directories: [/apps/api, /apps/registry, /apps/worker]
-    schedule: { interval: weekly }
-    # Node majors are chosen by hand to land on an LTS line (odd majors like 25
-    # are short-lived and already end-of-life); minor/patch base-image refreshes
-    # still come through.
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 1
     ignore:
       - dependency-name: node
-        update-types: [version-update:semver-major]
+        update-types:
+          - "version-update:semver-major"
+    groups:
+      base-images:
+        patterns: ["*"]
