@@ -16,6 +16,6 @@
     "test": "node --test --import tsx src/*.test.ts"
   },
   "dependencies": {
-    "zod": "^3.23.0"
+    "zod": "^4.6.5"
   }
 }
