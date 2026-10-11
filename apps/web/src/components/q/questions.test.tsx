@@ -1,0 +1,65 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { renderToStaticMarkup } from 'react-dom/server';
+import type { SettingsStore } from './ui';
+import { aiQ, ESSENTIALS, LATER } from './questions';
+import { QUESTIONS, THEME_SLOTS, type ThemeSummaryWire } from '@asf/shared/ui';
+import { ThemeCard } from '../ThemeSettings';
+
+const store: SettingsStore = { byKey: {}, loaded: true, err: null, saveMany: async () => null, reload: () => {} };
+
+// #136: the AI question offers only the three real choices; the disabled
+// "Something else … coming soon" placeholder (Copilot/OpenAI-compat/DeepSeek) is gone.
+test('#136: the AI question has exactly three, none-disabled choices, and mentions no unshipped provider', () => {
+  const html = renderToStaticMarkup(<aiQ.Body store={store} actions={() => null} />);
+  const titles = [...html.matchAll(/class="choice[^"]*"[^>]*><b>([^<]+)/g)].map((m) => m[1]);
+  assert.deepEqual(titles, ['Claude API key', 'Claude subscription', 'ChatGPT / OpenAI']);
+  assert.ok(!/\bdisabled(=|>)/.test(html), 'no choice should render disabled when nothing is env-pinned');
+  for (const bad of ['Something else', 'Copilot', 'DeepSeek', 'coming soon']) {
+    assert.ok(!html.includes(bad), `unexpected "${bad}" in the AI question`);
+  }
+});
+
+test('#136: the tip note still explains Vertex/Bedrock are env-only, unchanged by the cleanup', () => {
+  assert.match(aiQ.tipNote!, /Vertex AI and Bedrock are set up in \.env only/);
+});
+
+const withSettings = (v: Record<string, string>): SettingsStore =>
+  ({ ...store, byKey: Object.fromEntries(Object.entries(v).map(([k, value]) => [k, { key: k, value }])) as never });
+
+test('the API key is the recommended Claude choice; a subscription is labelled personal use', () => {
+  const html = renderToStaticMarkup(<aiQ.Body store={store} actions={() => null} />);
+  assert.match(html, /Claude API key<\/b>[^]*?Recommended/);
+  assert.match(html, /Claude subscription<\/b>[^]*?personal use only/);
+});
+
+test('picking a subscription explains the personal-use terms; several operators add a warning', () => {
+  const solo = renderToStaticMarkup(<aiQ.Body store={withSettings({ AGENT_AUTH_MODE: 'oauth-token', AUTH_MODE: 'none' })} actions={() => null} />);
+  assert.match(solo, /shared[^]*?by several people/);
+  assert.match(solo, /code\.claude\.com\/docs\/en\/legal-and-compliance/);
+  assert.ok(!solo.includes('⚠'), 'one operator: no warning');
+  const shared = withSettings({ AGENT_AUTH_MODE: 'oauth-token', AUTH_MODE: 'header' });
+  assert.match(renderToStaticMarkup(<aiQ.Body store={shared} actions={() => null} />), /⚠ A Claude subscription is for its owner/);
+  assert.equal(aiQ.attention!(shared.byKey), true, 'the Settings list flags the question');
+  const keyed = renderToStaticMarkup(<aiQ.Body store={withSettings({ AGENT_AUTH_MODE: 'api-key', AUTH_MODE: 'header' })} actions={() => null} />);
+  assert.ok(!keyed.includes('⚠') && !keyed.includes('several people'), 'an API key needs no note');
+});
+
+test('M12: every shared question (including "look") has a web question, and vice versa', () => {
+  assert.deepEqual([...ESSENTIALS, ...LATER].map((q) => q.id).sort(), QUESTIONS.map((q) => q.id).sort());
+  assert.equal(LATER.find((q) => q.id === 'look')?.title, 'How should the factory look?');
+});
+
+test('M12: a theme card shows the coordinator first, pictures where uploaded and placeholders elsewhere; text is escaped', () => {
+  const t: ThemeSummaryWire = {
+    id: 'hive', name: 'The <b>Hive</b>', description: null, crewName: 'The Hive', builtIn: false, active: true,
+    images: { orchestrator: { url: '/api/themes/hive/images/orchestrator?v=1', version: '1' } },
+  };
+  const html = renderToStaticMarkup(<ThemeCard t={t} on onPick={() => {}} />);
+  assert.match(html, /aria-checked="true"/);
+  assert.match(html, /<img class="avatar lead" src="\/api\/themes\/hive\/images\/orchestrator\?v=1"/);
+  assert.equal((html.match(/avatar-empty/g) ?? []).length, THEME_SLOTS.length - 1);
+  assert.match(html, /The &lt;b&gt;Hive&lt;\/b&gt;/);
+  assert.match(html, /Uploaded/);
+  assert.match(html, /The crew is called The Hive\./);
+});

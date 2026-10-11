@@ -1,0 +1,38 @@
+# Host-worker (hybrid) mode overlay — M10 WP5.
+#
+# Layer this on the self-host stack:
+#   docker compose -f docker-compose.self-host.yml -f docker-compose.host-worker.yml up -d
+#
+# It keeps postgres/registry/api in containers but runs the *worker on the host*
+# (supervised by launchd/systemd — see scripts/host-worker.sh) so the agent can use
+# host-only credentials: an interactive `claude login` / `claude setup-token`, or
+# Google ADC for Vertex. Two changes vs. the base file:
+#
+#   1. Publish the registry on 127.0.0.1:8788 so the host worker can reach it
+#      (the base file only `expose`s it on the compose network). Loopback only,
+#      never 0.0.0.0 — the registry has no auth of its own.
+#   2. Move the compose `worker` behind a `profiles:` so `up` does NOT start it;
+#      the host worker is the only worker in this mode. Bring the container worker
+#      back for a one-off with `--profile compose-worker` if you ever need it.
+#   3. The `supervisor` (which starts the container worker from the UI) goes behind
+#      the same profile, and the api is told there is none: the UI shows the
+#      `./scripts/asf up` hint instead of a Start button.
+name: asf
+services:
+  registry:
+    # Loopback-only publish so the host worker (and only it) can reach the registry.
+    ports:
+      - '127.0.0.1:8788:8788'
+
+  api:
+    environment:
+      ASF_LOCAL_SUPERVISOR: '0'
+
+  supervisor:
+    profiles:
+      - compose-worker
+
+  worker:
+    # Not started by default: assigned to a profile that `up` does not activate.
+    profiles:
+      - compose-worker

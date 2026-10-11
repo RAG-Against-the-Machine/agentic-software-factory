@@ -1,0 +1,40 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: asf, POSTGRES_PASSWORD: asf, POSTGRES_DB: asf_test }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U asf" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_TEST_URL: postgres://asf:asf@localhost:5432/asf_test
+      LOG_LEVEL: warn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11.20.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @asf/shared build
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - name: release version script
+        run: bash scripts/next-version.test.sh
+      - name: generated config docs are current
+        run: pnpm gen:config:check
+      - name: no credential env names in agent runtime code
+        # The runtime must never read a token/secret from the environment. Match
+        # env-style ALL-CAPS names only, so `input_tokens` / `total_cost_usd`
+        # (Claude Code's own result fields) do not trip it.
+        run: '! grep -rnE "[A-Z_]*(TOKEN|SECRET|PASSWORD|API_KEY)[A-Z_]*" apps/worker/src/runtimes/ --include=*.ts'
+      - name: agent credential names only in the worker auth layer
+        # M8 WP C: every model-provider credential env name lives under
+        # apps/worker/src/auth/ (the per-provider translators) and nowhere else in the
+        # worker's non-test code, so no other file can read or set one by name.
+        run: '! grep -rnwE "ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_AUTH_TOKEN|OPENAI_API_KEY|CODEX_API_KEY|OPENAI_COMPAT_API_KEY|COPILOT_GITHUB_TOKEN|GH_TOKEN|GITHUB_COPILOT_TOKEN" apps/worker/src apps/worker/hooks --include=*.ts --include=*.mjs --exclude=*.test.ts --exclude=*.test.mjs --exclude-dir=auth'

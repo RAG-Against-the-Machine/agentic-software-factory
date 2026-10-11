@@ -1,0 +1,182 @@
+# Self-hosted factory: every service as a container, restart-always, state in
+# named volumes.   docker compose -f docker-compose.self-host.yml up -d --build
+# Configuration: copy .env.example to .env (see docs/CONFIGURATION.md).
+# Access: the api binds loopback; put Tailscale/Caddy in front (docs/SELF_HOSTING.md).
+name: asf
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: asf
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-asf}
+      POSTGRES_DB: asf
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U asf']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  registry:
+    image: ghcr.io/rag-against-the-machine/asf-registry:${ASF_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: apps/registry/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PORT: 8788
+      # Bind all interfaces so the api and worker containers can reach it. Overrides
+      # any REGISTRY_HOST=127.0.0.1 from .env (which would defeat PORT's implied 0.0.0.0
+      # and make the registry unreachable across the compose network). Not published.
+      REGISTRY_HOST: 0.0.0.0
+      DATABASE_URL: postgres://asf:${POSTGRES_PASSWORD:-asf}@postgres:5432/asf
+    # Reachable only from the other containers. Never publish this port.
+    expose:
+      - '8788'
+    # /health checks the DB + migrations, so "healthy" means "ready to serve org
+    # settings" — which is what the api's boot load needs. (Images have node, not curl.)
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8788/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  api:
+    image: ghcr.io/rag-against-the-machine/asf-api:${ASF_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    # Wait for the registry to be HEALTHY (not just started) so the api's boot load
+    # of org settings succeeds first time; the api also retries in the background.
+    depends_on:
+      registry:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PORT: 8787
+      # Bind all interfaces so the worker container can reach it (see registry note).
+      # The host publish binding below is still loopback-only.
+      API_HOST: 0.0.0.0
+      REGISTRY_URL: http://registry:8788
+      WEB_DIST: /app/web
+      DATABASE_URL: ''   # only the registry talks to Postgres
+      # Tracker/SCM tokens come from the shell that runs `docker compose up`, so they never
+      # need to live in .env (blank there = falls through to these).
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
+      # The supervisor sidecar below lets /setup and /workers start a stopped worker,
+      # and lets an update be applied from the UI.
+      ASF_LOCAL_SUPERVISOR: '1'
+      SUPERVISOR_URL: http://supervisor:8791
+    # Loopback only; expose it to people through Tailscale or a reverse proxy.
+    ports:
+      - '127.0.0.1:${ASF_PORT:-8787}:8787'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  worker:
+    image: ghcr.io/rag-against-the-machine/asf-worker:${ASF_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    # The worker reads its auth mode + credential presence from the api at boot;
+    # wait until the api is healthy so the first preflight sees real org settings.
+    depends_on:
+      api:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PORT: 8790
+      REGISTRY_URL: http://registry:8788
+      BFF_URL: http://api:8787
+      DATABASE_URL: ''   # only the registry talks to Postgres
+      # Inside the container the worktrees/runs live on the named volumes, whatever .env says.
+      WORKTREE_ROOT: /data/worktrees
+      RUN_DATA_ROOT: /data/runs
+      # Clone credentials are per-run from the api; the worker holds no tracker/SCM token.
+      GITHUB_TOKEN: ''
+      JIRA_API_TOKEN: ''
+      # Agent auth: leave AGENT_AUTH_MODE empty (default) so the /admin Agent
+      # authentication panel controls the mode (org tier) and the credential is
+      # entered there (subscription token from `claude setup-token`, or an API key)
+      # and delivered to the worker per run. Set values here only to hard-pin the
+      # fleet from the environment (an env value overrides the UI). Never in .env.
+      AGENT_AUTH_MODE: ${AGENT_AUTH_MODE:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Vertex AI (AGENT_AUTH_MODE=vertex): the auth layer sets CLAUDE_CODE_USE_VERTEX
+      # per spawn; project + region come from .env (ANTHROPIC_VERTEX_PROJECT_ID,
+      # CLOUD_ML_REGION). Auth is the host's Application Default Credentials, mounted
+      # read-only below — never copied into the image or the org secret sink. Inert
+      # in the other auth modes (nothing reads it unless CLAUDE_CODE_USE_VERTEX is on).
+      GOOGLE_APPLICATION_CREDENTIALS: /home/node/.config/gcloud/application_default_credentials.json
+    volumes:
+      - worktrees:/data/worktrees
+      - runs:/data/runs
+      # Host ADC (`gcloud auth application-default login`). Override the source with
+      # GCLOUD_CONFIG_DIR; harmless empty mount when the host has no gcloud config.
+      - ${GCLOUD_CONFIG_DIR:-${HOME}/.config/gcloud}:/home/node/.config/gcloud:ro
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+
+  # Holds the Docker socket for two jobs: start the `worker` container above when it
+  # has stopped (#135), and run the updater when someone applies a release from the
+  # UI. Same image as the api, different entrypoint. It can inspect/start/restart
+  # THAT worker, and create one `docker:cli` updater container whose only command is
+  # "pin ASF_VERSION in .env, then compose pull && up -d" for this project (found
+  # from this container's compose labels) — nothing else. It gets no env_file, so
+  # no credentials. Reachable only from the api over the compose network.
+  supervisor:
+    image: ghcr.io/rag-against-the-machine/asf-api:${ASF_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    command: ['node', 'apps/api/dist/supervisor/main.js']
+    user: root   # the docker socket is root-owned
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Never publish this port.
+    expose:
+      - '8791'
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-asf}
+    volumes:
+      - backups:/backups
+    # Nightly pg_dump, 14-day retention. Sync /backups offsite from the host (rclone/B2).
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        while true; do
+          pg_dump -h postgres -U asf asf | gzip > "/backups/asf-$$(date +%F).sql.gz"
+          find /backups -name 'asf-*.sql.gz' -mtime +14 -delete
+          sleep 86400
+        done
+
+volumes:
+  pgdata:
+  worktrees:
+  runs:
+  backups:

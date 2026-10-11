@@ -1,0 +1,110 @@
+import { test, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import type { TicketProvider, ScmProvider, Preflight } from '@asf/shared';
+import { checkCredentials, subscriptionExpiryWarning, __resetCredentialHealth } from './credential-health.js';
+import { resetPreflightCache } from './provider-preflights.js';
+import { TicketProviderRegistry } from './providers/tickets/registry.js';
+import { ScmProviderRegistry } from './providers/scm/registry.js';
+
+// Credential health drives the preflights through fake provider registries and
+// stubs the registry RPC layer: recordCredentialHealth mimics the registry's
+// failing_since bookkeeping, listOrgSecretNames returns the saved secrets' ages.
+const realFetch = global.fetch;
+const ENV_KEYS = ['TICKET_PROVIDER', 'SCM_PROVIDER', 'GITHUB_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'] as const;
+afterEach(() => {
+  global.fetch = realFetch;
+  resetPreflightCache();
+  __resetCredentialHealth();
+  for (const k of ENV_KEYS) delete process.env[k];
+});
+
+const DAY = 86_400_000;
+const NOW = Date.parse('2026-09-29T12:00:00Z');
+const daysAgo = (n: number) => new Date(NOW - n * DAY).toISOString();
+
+function stubRegistry(opts: { secrets?: { name: string; updatedAt: string }[] } = {}) {
+  const recorded: { key: string; ok: boolean; reason: string | null; label: string }[] = [];
+  let failingSince: string | null = null;
+  global.fetch = (async (_url: string, init?: { body?: string }) => {
+    const body = JSON.parse((init?.body as string) ?? '{}') as { op: string; key: string; ok: boolean; reason: string | null; label: string };
+    let result: unknown = { ok: true };
+    if (body.op === 'recordCredentialHealth') {
+      recorded.push({ key: body.key, ok: body.ok, reason: body.reason, label: body.label });
+      failingSince = body.ok ? null : failingSince ?? '2026-09-03T08:00:00.000Z';
+      result = { health: { key: body.key, ok: body.ok, reason: body.reason, failingSince, alertedAt: failingSince, checkedAt: new Date().toISOString() } };
+    } else if (body.op === 'listOrgSecretNames') {
+      const secrets = opts.secrets ?? [];
+      result = { names: secrets.map((s) => s.name), secrets };
+    }
+    return new Response(JSON.stringify({ ok: true, result }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  return recorded;
+}
+
+/** GitHub tickets whose preflight answers from `pf`; a mock SCM (nothing to check). */
+function deps(pf: () => Preflight) {
+  return {
+    tickets: new TicketProviderRegistry(async (k) => ({ kind: k, preflight: async () => pf() }) as unknown as TicketProvider, () => 'github'),
+    scm: new ScmProviderRegistry(async (k) => ({ kind: k, preflight: async () => ({ ok: true, identity: 'octocat' }) }) as unknown as ScmProvider, () => 'mock'),
+  };
+}
+
+test('a failing preflight is recorded and reported, then clears on recovery', async () => {
+  process.env.TICKET_PROVIDER = 'github';
+  process.env.GITHUB_TOKEN = 'ghp_test';
+  const recorded = stubRegistry();
+  let pf: Preflight = { ok: false, reason: 'HTTP 401 Bad credentials' };
+  const d = deps(() => pf);
+
+  let health = await checkCredentials(d, { force: true, now: NOW });
+  assert.deepEqual(health.GITHUB_TOKEN, { ok: false, reason: 'HTTP 401 Bad credentials', since: '2026-09-03T08:00:00.000Z' });
+  assert.deepEqual(recorded[0], { key: 'GITHUB_TOKEN', ok: false, reason: 'HTTP 401 Bad credentials', label: 'GitHub token' });
+
+  pf = { ok: true, identity: 'octocat' };
+  health = await checkCredentials(d, { force: true, now: NOW });
+  assert.deepEqual(health.GITHUB_TOKEN, { ok: true, reason: null, since: null });
+  assert.equal(recorded.length, 2);
+});
+
+test('the Settings-load check is cached for 30s; a forced (timer) check is not', async () => {
+  process.env.TICKET_PROVIDER = 'github';
+  process.env.GITHUB_TOKEN = 'ghp_test';
+  const recorded = stubRegistry();
+  const d = deps(() => ({ ok: true, identity: 'octocat' }));
+  await checkCredentials(d, { now: NOW });
+  await checkCredentials(d, { now: NOW + 10_000 });
+  assert.equal(recorded.length, 1);
+  await checkCredentials(d, { force: true, now: NOW + 10_000 });
+  assert.equal(recorded.length, 2);
+});
+
+test('an unsaved token is not checked (nothing has stopped working)', async () => {
+  process.env.TICKET_PROVIDER = 'github';
+  const recorded = stubRegistry();
+  const health = await checkCredentials(deps(() => ({ ok: false, reason: 'no token' })), { force: true, now: NOW });
+  assert.equal(recorded.length, 0);
+  assert.equal(health.GITHUB_TOKEN, undefined);
+});
+
+test('subscription expiry warns within 30 days of saved-on + 365d', () => {
+  assert.equal(subscriptionExpiryWarning(daysAgo(334), NOW), undefined, '31 days left: no warning yet');
+  assert.equal(subscriptionExpiryWarning(daysAgo(335), NOW), new Date(NOW + 30 * DAY).toISOString(), '30 days left: warn');
+  assert.equal(subscriptionExpiryWarning(daysAgo(366), NOW), new Date(NOW - DAY).toISOString(), 'expired: still warns');
+});
+
+test('a UI-saved subscription token near expiry gets expiresAt; a fresh one does not', async () => {
+  stubRegistry({ secrets: [{ name: 'CLAUDE_CODE_OAUTH_TOKEN', updatedAt: daysAgo(335) }] });
+  let health = await checkCredentials(deps(() => ({ ok: true, identity: 'octocat' })), { force: true, now: NOW });
+  assert.deepEqual(health.CLAUDE_CODE_OAUTH_TOKEN, { ok: true, reason: null, since: null, expiresAt: new Date(NOW + 30 * DAY).toISOString() });
+
+  stubRegistry({ secrets: [{ name: 'CLAUDE_CODE_OAUTH_TOKEN', updatedAt: daysAgo(334) }] });
+  health = await checkCredentials(deps(() => ({ ok: true, identity: 'octocat' })), { force: true, now: NOW });
+  assert.equal(health.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+});
+
+test('a subscription token set by env gets no expiry warning', async () => {
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat-env';
+  stubRegistry({ secrets: [{ name: 'CLAUDE_CODE_OAUTH_TOKEN', updatedAt: daysAgo(366) }] });
+  const health = await checkCredentials(deps(() => ({ ok: true, identity: 'octocat' })), { force: true, now: NOW });
+  assert.equal(health.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+});

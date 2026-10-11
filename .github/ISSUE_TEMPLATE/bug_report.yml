@@ -1,0 +1,41 @@
+name: Bug report
+description: Something doesn't work the way the docs say it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, what you got instead.
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Dispatch a ticket with …
+        2. …
+    validations: { required: true }
+  - type: input
+    id: version
+    attributes:
+      label: ASF version
+      description: "`ASF_VERSION` in .env, the image tag shown by `./scripts/asf doctor`, or a commit SHA."
+    validations: { required: true }
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is it running?
+      options: [Docker Compose (self-host), host-worker mode, dev (pnpm dev), Cloud (GCP/AWS), other]
+    validations: { required: true }
+  - type: input
+    id: providers
+    attributes:
+      label: Ticket tracker / SCM / agent runtime
+      placeholder: e.g. jira / gitlab / claude-code
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: "`./scripts/asf logs api` / `worker`, or the run's event log. **Remove tokens, keys and private URLs first.**"
+      render: text

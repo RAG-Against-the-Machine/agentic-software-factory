@@ -1,0 +1,19 @@
+{
+  "name": "@asf/api",
+  "version": "0.0.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "HTTP API for the web UI. Holds ticket/SCM credentials; owns providers and notifications. No database.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/index.ts",
+    "test": "sh -c 'f=$(find src -name \"*.test.ts\"); [ -z \"$f\" ] && echo \"no tests\" || node --test --import tsx $f'"
+  },
+  "dependencies": {
+    "@asf/shared": "workspace:*",
+    "fastify": "^5.0.0",
+    "@fastify/static": "^8.0.0"
+  }
+}

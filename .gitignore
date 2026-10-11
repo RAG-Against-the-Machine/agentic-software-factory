@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.data/
+*.log
+.DS_Store
+coverage/
+
+# Local tooling / ops artifacts (never committed)
+.hermes/
+.hermes-run/
+backups/

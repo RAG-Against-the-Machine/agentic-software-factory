@@ -1,0 +1,141 @@
+# Fresh-machine install proof (M10 #85): assert "it installs on a clean box" on
+# every PR that touches the install surface, and again nightly. The containers
+# job is the milestone gate; the host-worker job documents the no-credential
+# failure path and is intentionally non-blocking.
+name: install-e2e
+on:
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'docker-compose*.yml'
+      - 'apps/*/Dockerfile'
+      - 'db/**'
+      - 'docs/INSTALL.md'
+
+jobs:
+  # A clean Ubuntu box with only Docker: run the wizard exactly as an operator
+  # would, then drive the M3 browser flow end to end and exercise the day-2 CLI.
+  containers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install (containers mode)
+        run: ASF_MODE=containers ASF_PORT=18787 ./scripts/setup.sh --non-interactive
+
+      - name: .env is a real secret, locked down
+        run: |
+          perm="$(stat -c '%a' .env)"
+          [ "$perm" = "600" ] || { echo ".env is $perm, want 600"; exit 1; }
+          secret="$(grep '^RUN_EVENT_SECRET=' .env | cut -d= -f2-)"
+          echo "$secret" | grep -Eq '^[0-9a-f]{64}$' || { echo "RUN_EVENT_SECRET is not 64 hex chars"; exit 1; }
+          grep -q '\*\*\*' .env && { echo ".env still contains a masked (***) value"; exit 1; } || true
+          echo "ok: .env chmod 600, RUN_EVENT_SECRET is 64-hex, no *** placeholders"
+
+      - name: api answers /health
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:18787/health >/dev/null && { echo "health ok after $((i*2))s"; exit 0; }
+            sleep 2
+          done
+          echo "api /health never came up"; exit 1
+
+      - name: registry applied migrations, api provider preflight ok
+        run: |
+          registry_log="$(docker compose -f docker-compose.self-host.yml logs registry)"
+          echo "$registry_log" | grep -o '"total":[0-9]*' | tail -1 \
+            || { echo "no migration count in the registry log"; exit 1; }
+          docker compose -f docker-compose.self-host.yml logs api | grep -q 'preflight ok' \
+            || { echo "api never logged a provider preflight ok"; exit 1; }
+
+      - name: M3 browser flow (dispatch -> gate -> approve -> merge -> succeeded)
+        run: |
+          # The compose worker has no agent credential, so it can't run roles; stop
+          # it and let m3-smoke drive its own registry-side fake worker instead.
+          docker compose -f docker-compose.self-host.yml stop worker
+          secret="$(grep '^RUN_EVENT_SECRET=' .env | cut -d= -f2-)"
+          docker run --rm --network asf_default -v "$PWD/scripts:/s:ro" \
+            -e RUN_EVENT_SECRET="$secret" \
+            -e API_URL=http://api:8787 \
+            -e REGISTRY_URL=http://registry:8788 \
+            node:22-slim node /s/m3-smoke.mjs | tee m3.log
+          grep -q 'FINAL: state=succeeded' m3.log || { echo "m3-smoke did not reach state=succeeded"; exit 1; }
+
+      - name: day-2 CLI — doctor (a fresh no-credential install is 0 or 1)
+        run: |
+          # doctor exits 1 while agent auth is unset / no worker has registered
+          # (the ⚠ + ✗) — the expected state right after install with no agent
+          # credential. Accept 0 or 1, nothing worse. Capture the code WITHOUT
+          # tripping `bash -e` (a bare `asf doctor; code=$?` aborts on the exit-1).
+          code=0
+          scripts/asf doctor || code=$?
+          [ "$code" -le 1 ] || { echo "asf doctor exited $code"; exit 1; }
+
+      - name: day-2 CLI — backup writes a dump
+        run: |
+          scripts/asf backup
+          ls backups/*.sql.gz >/dev/null 2>&1 || { echo "asf backup produced no file"; exit 1; }
+
+      - name: day-2 CLI — reset removes every asf_* volume
+        run: |
+          scripts/asf reset --yes
+          if docker volume ls --format '{{.Name}}' | grep -q '^asf_'; then
+            echo "asf reset left volumes behind:"; docker volume ls --format '{{.Name}}' | grep '^asf_'; exit 1
+          fi
+          echo "ok: no asf_* volumes remain"
+
+      - name: collect compose logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.self-host.yml logs > compose-logs.txt 2>&1 || true
+      - name: upload compose logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-e2e-compose-logs
+          path: compose-logs.txt
+          if-no-files-found: ignore
+
+  # host-worker mode: the stack in containers, the worker built on the host. Without
+  # a host agent credential the worker must refuse to offer capacity and exit
+  # non-zero. Documented path, so this job is non-blocking.
+  host-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11.20.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      # worker-host.sh requires the claude CLI on PATH before it will run the worker;
+      # install it so we exercise the worker's own agent-auth preflight, not the wrapper's
+      # missing-CLI guard.
+      - name: install the claude CLI
+        run: npm i -g @anthropic-ai/claude-code
+
+      - name: install (host-worker mode, no supervisor)
+        run: ASF_MODE=host-worker ASF_PORT=18788 ./scripts/setup.sh --non-interactive --no-supervisor
+
+      - name: worker takes no work without an agent credential
+        run: |
+          set +e
+          # Since #163 a worker with no usable AI stays up and waits for one to be
+          # connected in Settings (so a key entered later needs no restart). It must
+          # log the preflight failure, say it is waiting, and never register for work.
+          WORKER_DRY_RUN=1 AGENT_RUNTIME=claude-code scripts/worker-host.sh > worker.log 2>&1 &
+          wpid=$!
+          for i in $(seq 1 90); do
+            grep -q 'waiting for an AI to be connected' worker.log && break
+            kill -0 "$wpid" 2>/dev/null || break
+            sleep 2
+          done
+          sleep 5   # give a wrongly-registering worker the chance to show it
+          kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+          cat worker.log
+          grep -q 'agent auth preflight failed' worker.log \
+            || { echo "worker did not log the agent-auth preflight failure"; exit 1; }
+          grep -q 'waiting for an AI to be connected' worker.log \
+            || { echo "worker did not wait for an AI to be connected"; exit 1; }
+          if grep -q 'registered; polling for tasks' worker.log; then echo "worker registered for work despite no credential"; exit 1; fi
+          echo "ok: worker is waiting for a credential and took no work"

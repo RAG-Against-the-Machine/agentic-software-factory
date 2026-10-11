@@ -1,0 +1,440 @@
+#!/usr/bin/env bash
+#
+# asf — day-2 CLI for the self-hosted factory. One portable entry point over
+# `docker compose -f docker-compose.self-host.yml` (project "asf"), so operators
+# never type a compose command.
+#
+#   asf up | down | restart [svc] | logs [svc] [-f] | status
+#   asf doctor            # read-only health table
+#   asf update            # git pull --ff-only, rebuild, wait healthy
+#   asf backup            # immediate pg_dump into the backups volume + ./backups
+#   asf restore <file>    # load a dump back in
+#   asf reset --yes       # DESTROY all data (down -v)
+#   asf open              # open the UI in a browser
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT"
+
+# shellcheck source=scripts/lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+ENV_FILE="$ROOT/.env"
+BACKUP_DIR="$ROOT/backups"
+
+# Host-worker mode (ASF_MODE=2): the worker runs on this host under launchd/systemd
+# (scripts/host-worker.sh), not in a container. Layer the overlay that publishes the
+# registry on loopback (so the host worker can reach it) and disables the container
+# worker, and route worker up/down/status/logs to the host supervisor.
+HOST_WORKER_MODE=0
+HOST_WORKER="$SCRIPT_DIR/host-worker.sh"
+if [ "$(read_env_key "$ENV_FILE" ASF_MODE)" = "2" ]; then
+  HOST_WORKER_MODE=1
+  HOST_WORKER_OVERLAY="$ROOT/docker-compose.host-worker.yml"
+  compose() { docker compose -f "$COMPOSE_FILE" -f "$HOST_WORKER_OVERLAY" "$@"; }
+fi
+
+usage() {
+  cat <<'EOF'
+asf — manage the self-hosted factory.
+
+Usage: scripts/asf <command> [args]
+
+  up                 build (if needed) and start the stack, restart-always
+  down               stop the stack (volumes kept)
+  restart [svc]      restart the whole stack, or one service
+  logs [svc] [-f]    show logs (all services or one); -f to follow
+  status             docker compose ps
+  doctor             read-only health check (✓/✗/⚠), exit 0 only if all ✓
+  update             pull prebuilt images and restart, wait healthy
+                     (--from-source: git pull --ff-only + rebuild locally)
+  backup             immediate pg_dump into the backups volume and ./backups
+  restore <file>     restore the database from a .sql.gz dump
+  reset --yes        DESTROY all data and volumes (double-confirmed)
+  open               open the UI in a browser
+  help               this help
+EOF
+}
+
+# --- port / url -------------------------------------------------------------
+asf_port() { local p; p="$(read_env_key "$ENV_FILE" ASF_PORT)"; printf '%s' "${p:-8787}"; }
+ui_url()   { printf 'http://localhost:%s' "$(asf_port)"; }
+
+# --- fetch a URL from inside a container (images have node, not curl) --------
+node_fetch() { # $1 = service, $2 = url ; body -> stdout, exit 0 iff HTTP ok
+  compose exec -T "$1" node -e '
+    fetch(process.argv[1]).then(async r => {
+      const t = await r.text();
+      process.stdout.write(t);
+      process.exit(r.ok ? 0 : 1);
+    }).catch(e => { process.stderr.write(String((e && e.message) || e)); process.exit(2); });
+  ' "$2" 2>/dev/null
+}
+
+# Fetch an api JSON route and extract a summary line with a JS body over `j`.
+# The api routes are identity-gated; AUTH_MODE=none resolves the default identity,
+# so no auth header is needed. Runs inside the api container.
+api_check() { # $1 = path, $2 = js body returning a string ; prints result
+  compose exec -T api node -e '
+    const path = process.argv[1];
+    const extract = new Function("j", process.argv[2]);
+    fetch("http://127.0.0.1:8787" + path)
+      .then(r => r.json())
+      .then(j => { process.stdout.write(String(extract(j))); })
+      .catch(e => { process.stdout.write("ERR|" + ((e && e.message) || e)); process.exit(1); });
+  ' "$1" "$2" 2>/dev/null || true
+}
+
+# --- subcommands ------------------------------------------------------------
+cmd_up() {
+  compose up -d --build
+  # Host-worker mode (ASF_MODE=2): the container worker is disabled; start the one
+  # supervised on this host instead.
+  if [ "$HOST_WORKER_MODE" -eq 1 ]; then
+    info "mode 2: starting the host worker"
+    "$HOST_WORKER" up || warn "host-worker launcher failed" "run it directly: $HOST_WORKER up"
+  fi
+  info "UI: $(ui_url)"
+}
+
+cmd_down() {
+  # `asf down worker` in mode 2 only stops the host worker; a bare `asf down`
+  # stops the stack and the host worker together.
+  if [ "$HOST_WORKER_MODE" -eq 1 ] && [ "${1:-}" = "worker" ]; then
+    "$HOST_WORKER" down; return
+  fi
+  compose down
+  [ "$HOST_WORKER_MODE" -eq 1 ] && { "$HOST_WORKER" down || true; }
+}
+
+cmd_restart() {
+  if [ "$HOST_WORKER_MODE" -eq 1 ] && [ "${1:-}" = "worker" ]; then
+    "$HOST_WORKER" up; return   # kickstart -k / systemctl restart
+  fi
+  if [ -n "${1:-}" ]; then compose restart "$1"; else compose restart; fi
+}
+
+cmd_status() {
+  if [ "$HOST_WORKER_MODE" -eq 1 ] && [ "${1:-}" = "worker" ]; then
+    "$HOST_WORKER" status; return
+  fi
+  compose ps
+}
+
+cmd_logs() {
+  local follow=0 svcs=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -f|--follow) follow=1; shift ;;
+      *) svcs+=("$1"); shift ;;
+    esac
+  done
+  # `asf logs worker` in mode 2 tails the host worker log (there is no container).
+  if [ "$HOST_WORKER_MODE" -eq 1 ] && [ "${#svcs[@]}" -eq 1 ] && [ "${svcs[0]}" = "worker" ]; then
+    if [ "$follow" -eq 1 ]; then "$HOST_WORKER" logs -f; else "$HOST_WORKER" logs; fi
+    return
+  fi
+  if [ "$follow" -eq 1 ]; then
+    compose logs -f --tail=100 "${svcs[@]}"
+  else
+    compose logs --tail=200 "${svcs[@]}"
+  fi
+}
+
+cmd_open() {
+  local url; url="$(ui_url)"
+  if command -v open >/dev/null 2>&1; then open "$url"
+  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$url"
+  else info "open this in your browser: $url"; fi
+}
+
+cmd_update() {
+  local from_source=0
+  case "${1:-}" in
+    --from-source|--build) from_source=1 ;;
+    "") ;;
+    *) die "unknown update option: $1 (use --from-source to rebuild locally)" ;;
+  esac
+  section "Updating"
+  if [ "$from_source" -eq 1 ]; then
+    [ -z "$(git status --porcelain 2>/dev/null)" ] || die "working tree is dirty — commit or stash before updating"
+    info "git pull --ff-only"
+    git pull --ff-only
+    info "docker compose up -d --build"
+    compose up -d --build
+  else
+    # Default: pull the prebuilt images (pinned by ASF_VERSION, else :latest) and
+    # restart with no local build. Use --from-source to build from this checkout.
+    info "docker compose pull"
+    compose pull
+    info "docker compose up -d"
+    compose up -d
+  fi
+  section "Health"
+  wait_healthy postgres postgres 120 || true
+  wait_healthy registry registry 180 || true
+  wait_healthy api api 180 || true
+  # Migration count: the registry logs {"applied":N,"total":M} at boot.
+  local line count
+  line="$(compose logs --tail=500 registry 2>/dev/null | grep -o '"total":[0-9]*' | tail -1 || true)"
+  count="${line#*:}"
+  if [ -n "$count" ]; then ok "registry migrations applied: schema at ${count} migration(s)"
+  else warn "could not read the migration count from the registry log" "check: asf logs registry"; fi
+}
+
+cmd_backup() {
+  section "Backup"
+  local ts name remote
+  ts="$(date +%Y%m%d-%H%M%S)"
+  name="asf-manual-${ts}.sql.gz"
+  remote="/backups/${name}"
+  # The backup container already carries PGPASSWORD and reaches postgres over the
+  # compose network; write into the shared backups volume, then copy to the host.
+  compose exec -T backup sh -c "pg_dump -h postgres -U asf asf | gzip > '${remote}'" \
+    || die "pg_dump failed — is the stack up? (asf status)"
+  mkdir -p "$BACKUP_DIR"
+  compose cp "backup:${remote}" "$BACKUP_DIR/${name}"
+  ok "wrote ${remote} (backups volume)"
+  ok "copied to ${BACKUP_DIR}/${name}"
+}
+
+cmd_restore() {
+  local file="${1:-}"
+  [ -n "$file" ] || die "usage: asf restore <file.sql.gz>"
+  [ -f "$file" ] || die "no such file: $file"
+  confirm "Restore the database from ${file}? This REPLACES all current data." \
+    || { info "aborted"; return 0; }
+  section "Restore"
+  # Only the registry connects to Postgres; stop the whole app tier so nothing
+  # touches the database while we drop and reload the schema.
+  info "stopping api, worker and registry"
+  compose stop api worker registry
+  info "resetting the schema"
+  compose exec -T backup sh -c 'psql -h postgres -U asf -d asf -v ON_ERROR_STOP=1 -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"'
+  info "loading ${file}"
+  gunzip -c "$file" | compose exec -T backup sh -c 'psql -h postgres -U asf -d asf -q'
+  info "restarting the stack"
+  compose up -d
+  ok "restore complete"
+}
+
+cmd_reset() {
+  [ "${1:-}" = "--yes" ] || die "reset destroys all data — pass --yes to proceed"
+  confirm "This DELETES ALL DATA (pgdata, worktrees, runs, backups). Continue?" \
+    || { info "aborted"; return 0; }
+  confirm "Are you absolutely sure? This cannot be undone." \
+    || { info "aborted"; return 0; }
+  compose down -v
+  ok "stack down and all volumes removed"
+}
+
+cmd_doctor() {
+  DOCTOR_FAIL=0
+  DOCTOR_WARN=0
+
+  section "Host"
+  local docker_ok=0
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    ok "docker daemon reachable"; docker_ok=1
+  else
+    bad "docker daemon not reachable" "start Docker Desktop / the docker service"
+  fi
+  if docker compose version >/dev/null 2>&1; then
+    ok "docker compose v2 ($(docker compose version --short 2>/dev/null || echo present))"
+  else
+    bad "docker compose v2 not available" "install the Compose v2 plugin"
+  fi
+
+  local disk_dir avail_kb avail_gb
+  disk_dir="$HOME"
+  [ "$docker_ok" -eq 1 ] && disk_dir="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo "$HOME")"
+  [ -d "$disk_dir" ] || disk_dir="$ROOT"
+  avail_kb="$(df -Pk "$disk_dir" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [ -n "$avail_kb" ]; then
+    avail_gb=$((avail_kb / 1024 / 1024))
+    if [ "$avail_gb" -ge 10 ]; then ok "disk: ${avail_gb} GB free (${disk_dir})"
+    else warn "disk: only ${avail_gb} GB free (${disk_dir})" "free up space; images + Postgres need >= 10 GB"; fi
+  else
+    warn "could not measure free disk at ${disk_dir}" "make sure >= 10 GB is available"
+  fi
+
+  section "Configuration (.env)"
+  if [ ! -f "$ENV_FILE" ]; then
+    bad ".env missing" "run scripts/setup.sh to generate it"
+  else
+    local perm secret
+    perm="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE" 2>/dev/null || echo '?')"
+    if [ "$perm" = "600" ]; then ok ".env present (chmod 600)"
+    else warn ".env is chmod ${perm} (want 600)" "chmod 600 .env"; fi
+    secret="$(read_env_key "$ENV_FILE" RUN_EVENT_SECRET)"
+    case "$secret" in
+      "")       bad "RUN_EVENT_SECRET is empty" "set it in .env: openssl rand -hex 32" ;;
+      *"***"*)  bad "RUN_EVENT_SECRET looks masked (contains ***)" "paste the real secret into .env" ;;
+      *"#"*)    warn "RUN_EVENT_SECRET has an inline '#' — env_file keeps it literally" "remove the trailing comment from the line" ;;
+      *)        ok "RUN_EVENT_SECRET set" ;;
+    esac
+  fi
+
+  if [ "$docker_ok" -ne 1 ]; then
+    doctor_summary
+    return
+  fi
+
+  section "Containers"
+  local svc status container_svcs="postgres registry api worker backup"
+  # In host-worker mode the container worker is intentionally not running.
+  [ "$HOST_WORKER_MODE" -eq 1 ] && container_svcs="postgres registry api backup"
+  for svc in $container_svcs; do
+    status="$(container_health "$svc")"
+    case "$status" in
+      healthy|running) ok "${svc}: ${status}" ;;
+      starting)        warn "${svc}: starting" "give it a moment, then re-run doctor" ;;
+      missing)         bad "${svc}: not running" "asf up" ;;
+      *)               bad "${svc}: ${status}" "asf logs ${svc}" ;;
+    esac
+  done
+
+  section "Version"
+  local want cid img tag svcimg
+  want="$(read_env_key "$ENV_FILE" ASF_VERSION)"; want="${want:-latest}"
+  info "ASF_VERSION: ${want}"
+  local ver_svcs="registry api worker"
+  [ "$HOST_WORKER_MODE" -eq 1 ] && ver_svcs="registry api"
+  for svc in $ver_svcs; do
+    cid="$(compose ps -q "$svc" 2>/dev/null || true)"
+    if [ -z "$cid" ]; then warn "${svc}: not running" "asf up"; continue; fi
+    img="$(docker inspect --format '{{.Config.Image}}' "$cid" 2>/dev/null || true)"
+    tag="${img##*:}"; [ "$tag" = "$img" ] && tag="latest"
+    svcimg="${img%%:*}"
+    case "$svcimg" in
+      ghcr.io/*)
+        if [ "$tag" = "$want" ]; then ok "${svc}: ${tag}"
+        else warn "${svc}: running ${tag}, ASF_VERSION=${want}" "asf update to pull ${want}"; fi ;;
+      *) info "${svc}: locally built (${img})" ;;
+    esac
+  done
+
+  section "Services"
+  if node_fetch registry http://127.0.0.1:8788/health >/dev/null 2>&1; then ok "registry /health ok"
+  else bad "registry /health failed" "asf logs registry"; fi
+  if node_fetch api http://127.0.0.1:8787/health >/dev/null 2>&1; then ok "api /health ok"
+  else bad "api /health failed" "asf logs api"; fi
+
+  section "Providers"
+  local res kind rest
+  res="$(api_check /api/providers/ticket/preflight 'return j.ok ? ("OK|"+(j.kind||"?")+"|"+(j.identity||"")) : ("FAIL|"+(j.reason||"unknown"))')"
+  kind="${res%%|*}"; rest="${res#*|}"
+  case "$kind" in
+    OK)   ok "ticket provider (${rest%%|*}) — ${rest#*|}" ;;
+    FAIL) bad "ticket provider preflight failed: ${rest}" "set the provider + credential in the web UI (Settings)" ;;
+    *)    warn "ticket provider not reachable" "is the api up? asf logs api" ;;
+  esac
+  res="$(api_check /api/providers/scm/preflight 'return j.ok ? ("OK|"+(j.kind||"?")+"|"+(j.identity||"")) : ("FAIL|"+(j.reason||"unknown"))')"
+  kind="${res%%|*}"; rest="${res#*|}"
+  case "$kind" in
+    OK)   ok "SCM provider (${rest%%|*}) — ${rest#*|}" ;;
+    FAIL) bad "SCM provider preflight failed: ${rest}" "set the provider + credential in the web UI (Settings)" ;;
+    *)    warn "SCM provider not reachable" "is the api up? asf logs api" ;;
+  esac
+
+  section "Fleet"
+  res="$(api_check /api/fleet 'const w=j.workers||[]; if(!w.length) return "NONE"; const rt=[...new Set(w.flatMap(x=>x.runtimes||[]))].join(","); return "OK|"+w.length+"|"+(rt||"none")+"|"+(j.running||0)+"/"+(j.capacity||0)')"
+  kind="${res%%|*}"; rest="${res#*|}"
+  case "$kind" in
+    OK)   ok "workers: ${rest%%|*} live, runtimes [$(printf '%s' "$rest" | cut -d'|' -f2)], running $(printf '%s' "$rest" | cut -d'|' -f3)" ;;
+    NONE) bad "no live workers" "start one: asf up (or the host worker in mode 2)" ;;
+    *)    warn "fleet not reachable" "is the api up? asf logs api" ;;
+  esac
+
+  # Read the setup-status item, not /api/agent-auth: that route is worker-only
+  # (X-Run-Secret), so asking it here got a 401 body that read as "no credential".
+  res="$(api_check /api/setup/status 'const i=(j.items||[]).find(x=>x.id==="agent-auth"); if(!i) return "ERR|"+(j.error||"no agent-auth item"); return (i.done ? "OK|" : "WARN|") + (i.reason||"")')"
+  kind="${res%%|*}"; rest="${res#*|}"
+  case "$kind" in
+    OK)   ok "agent auth: ${rest}" ;;
+    WARN) warn "agent auth: ${rest}" "add the credential in the web UI (Settings → Which AI should do the work?)" ;;
+    *)    warn "agent auth not reachable" "is the api up? asf logs api" ;;
+  esac
+
+  # Anthropic's terms: a Claude subscription is for its owner's own use. The api flags
+  # a subscription token on a multi-operator factory (AUTH_MODE=header); see
+  # docs/CLAUDE_USAGE.md. A warning, never a failure.
+  res="$(api_check /api/setup/status 'const i=(j.items||[]).find(x=>x.id==="agent-auth"); return i && i.warning ? "WARN|"+i.warning : "OK|"')"
+  if [ "${res%%|*}" = "WARN" ]; then
+    warn "agent auth: ${res#*|}" "use a Claude API key, Vertex or Bedrock for a shared factory (docs/CLAUDE_USAGE.md)"
+  fi
+
+  if [ "$HOST_WORKER_MODE" -eq 1 ]; then
+    section "Host worker"
+    if [ "$(uname -s)" = "Darwin" ]; then
+      if launchctl print "gui/$(id -u)/com.asf.worker" >/dev/null 2>&1; then
+        ok "launchd agent com.asf.worker loaded"
+      else
+        bad "launchd agent com.asf.worker not loaded" "scripts/host-worker.sh up (or scripts/setup.sh --mode 2)"
+      fi
+    else
+      if systemctl --user is-active --quiet asf-worker.service 2>/dev/null; then
+        ok "systemd asf-worker.service active"
+      else
+        bad "systemd asf-worker.service not active" "scripts/host-worker.sh up (or scripts/setup.sh --mode 2)"
+      fi
+    fi
+  fi
+
+  section "Storage"
+  local pgsize last
+  pgsize="$(compose exec -T postgres du -sh /var/lib/postgresql/data 2>/dev/null | awk '{print $1}')"
+  [ -n "$pgsize" ] && info "pgdata volume: ${pgsize}"
+  last="$(compose exec -T backup sh -c 'ls -1t /backups/asf-*.sql.gz 2>/dev/null | head -1' 2>/dev/null | tr -d '\r')"
+  if [ -n "$last" ]; then ok "last backup: $(basename "$last")"
+  else warn "no backups yet" "run: asf backup (the nightly job also writes one)"; fi
+
+  section "Ports"
+  local port; port="$(asf_port)"
+  if port_in_use "$port"; then
+    if [ "$(container_health api)" = "healthy" ] || [ "$(container_health api)" = "running" ]; then
+      ok "ASF_PORT ${port} served by the api"
+    else
+      warn "port ${port} is in use but the api isn't running" "another process holds it; free it or change ASF_PORT"
+    fi
+  else
+    info "ASF_PORT ${port} is free"
+  fi
+
+  doctor_summary
+}
+
+doctor_summary() {
+  section "Summary"
+  if [ "$DOCTOR_FAIL" -eq 0 ] && [ "$DOCTOR_WARN" -eq 0 ]; then
+    ok "all checks passed"
+    return 0
+  fi
+  if [ "$DOCTOR_FAIL" -eq 0 ]; then
+    warn "${DOCTOR_WARN} warning(s) — usable, but see the fixes above"
+    return 0
+  fi
+  bad "${DOCTOR_FAIL} check(s) failed, ${DOCTOR_WARN} warning(s) — fix the ✗ items above"
+  return 1
+}
+
+# --- dispatch ---------------------------------------------------------------
+cmd="${1:-help}"
+[ $# -gt 0 ] && shift || true
+case "$cmd" in
+  up)       cmd_up "$@" ;;
+  down)     cmd_down "$@" ;;
+  restart)  cmd_restart "$@" ;;
+  logs)     cmd_logs "$@" ;;
+  status)   cmd_status "$@" ;;
+  doctor)   cmd_doctor "$@" ;;
+  update)   cmd_update "$@" ;;
+  backup)   cmd_backup "$@" ;;
+  restore)  cmd_restore "$@" ;;
+  reset)    cmd_reset "$@" ;;
+  open)     cmd_open "$@" ;;
+  help|-h|--help) usage ;;
+  *) printf 'unknown command: %s\n\n' "$cmd" >&2; usage >&2; exit 2 ;;
+esac

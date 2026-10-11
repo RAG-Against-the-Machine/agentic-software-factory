@@ -1,0 +1,91 @@
+{
+ "base": {
+  "ANTHROPIC_API_KEY": "STRAY-KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN": "STRAY-OAT",
+  "ANTHROPIC_AUTH_TOKEN": "STRAY-BEARER",
+  "OPENAI_API_KEY": "STRAY-OPENAI",
+  "PATH": "/usr/bin",
+  "HOME": "/home/asf"
+ },
+ "cases": [
+  {
+   "auth": {
+    "mode": "oauth-token",
+    "oauthToken": "CTX-OAT"
+   },
+   "env": {
+    "OPENAI_API_KEY": "STRAY-OPENAI",
+    "PATH": "/usr/bin",
+    "HOME": "/home/asf",
+    "CLAUDE_CODE_OAUTH_TOKEN": "CTX-OAT"
+   }
+  },
+  {
+   "auth": {
+    "mode": "api-key",
+    "apiKey": "CTX-KEY"
+   },
+   "env": {
+    "OPENAI_API_KEY": "STRAY-OPENAI",
+    "PATH": "/usr/bin",
+    "HOME": "/home/asf",
+    "ANTHROPIC_API_KEY": "CTX-KEY"
+   }
+  },
+  {
+   "auth": {
+    "mode": "oauth-token"
+   },
+   "env": {
+    "OPENAI_API_KEY": "STRAY-OPENAI",
+    "PATH": "/usr/bin",
+    "HOME": "/home/asf"
+   }
+  },
+  {
+   "auth": {
+    "mode": "api-key"
+   },
+   "env": {
+    "OPENAI_API_KEY": "STRAY-OPENAI",
+    "PATH": "/usr/bin",
+    "HOME": "/home/asf"
+   }
+  },
+  {
+   "auth": {
+    "mode": "vertex"
+   },
+   "env": {
+    "OPENAI_API_KEY": "STRAY-OPENAI",
+    "PATH": "/usr/bin",
+    "HOME": "/home/asf",
+    "CLAUDE_CODE_USE_VERTEX": "1"
+   }
+  },
+  {
+   "auth": {
+    "mode": "bedrock"
+   },
+   "env": {
+    "OPENAI_API_KEY": "STRAY-OPENAI",
+    "PATH": "/usr/bin",
+    "HOME": "/home/asf",
+    "CLAUDE_CODE_USE_BEDROCK": "1"
+   }
+  },
+  {
+   "auth": {
+    "mode": "api-key",
+    "apiKey": "CTX-KEY",
+    "oauthToken": "CTX-OAT"
+   },
+   "env": {
+    "OPENAI_API_KEY": "STRAY-OPENAI",
+    "PATH": "/usr/bin",
+    "HOME": "/home/asf",
+    "ANTHROPIC_API_KEY": "CTX-KEY"
+   }
+  }
+ ]
+}

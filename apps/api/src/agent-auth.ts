@@ -1,0 +1,94 @@
+import { AUTH_MODES, PROVIDER_KINDS, type ProviderKind, type RunAuth } from '@asf/shared';
+import { cfg } from './settings.js';
+import { resolveProviderSecret } from './providers/secrets.js';
+
+/**
+ * Compute the effective agent auth for a run, resolved at context time so the
+ * worker applies the CURRENT mode with no restart. Mirrors how the SCM clone
+ * credential is minted: the api holds the secret, resolves it per run, and hands
+ * the worker only the resolved value.
+ *
+ * One auth per model provider (M8 WP C). The mode comes from the resolver
+ * (env > org > default); exactly one credential goes on the wire, matching it:
+ *   anthropic          oauth-token  CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`)
+ *                      api-key      ANTHROPIC_API_KEY (metered)
+ *                      vertex/bedrock  nothing (their own env flags)
+ *   openai             api-key      OPENAI_API_KEY   (+ OPENAI_BASE_URL if set)
+ *                      chatgpt      nothing (a plan login in the runtime's home)
+ *   openai-compatible  api-key      OPENAI_COMPAT_API_KEY (+ OPENAI_COMPAT_BASE_URL)
+ *                      none         nothing (a keyless local server)
+ *   github             gh-token     GITHUB_COPILOT_TOKEN
+ * Credentials are org-stored as `secret://org/...` pointers resolved to the live
+ * value here. A blank credential returns the bare mode; the worker fails that run
+ * with a clear reason rather than the api silently falling back to another mode.
+ */
+interface ProviderAuthDef {
+  modeKey: 'AGENT_AUTH_MODE' | 'AGENT_AUTH_OPENAI_MODE' | 'AGENT_AUTH_OPENAI_COMPAT_MODE' | 'AGENT_AUTH_GITHUB_MODE';
+  credentialKey: Partial<Record<string, CredentialKey>>;
+  baseUrlKey?: 'OPENAI_BASE_URL' | 'OPENAI_COMPAT_BASE_URL';
+}
+type CredentialKey = 'ANTHROPIC_API_KEY' | 'CLAUDE_CODE_OAUTH_TOKEN' | 'OPENAI_API_KEY' | 'OPENAI_COMPAT_API_KEY' | 'GITHUB_COPILOT_TOKEN';
+
+export const PROVIDER_AUTH: Record<ProviderKind, ProviderAuthDef> = {
+  anthropic: { modeKey: 'AGENT_AUTH_MODE', credentialKey: { 'api-key': 'ANTHROPIC_API_KEY', 'oauth-token': 'CLAUDE_CODE_OAUTH_TOKEN' } },
+  openai: { modeKey: 'AGENT_AUTH_OPENAI_MODE', credentialKey: { 'api-key': 'OPENAI_API_KEY' }, baseUrlKey: 'OPENAI_BASE_URL' },
+  'openai-compatible': { modeKey: 'AGENT_AUTH_OPENAI_COMPAT_MODE', credentialKey: { 'api-key': 'OPENAI_COMPAT_API_KEY' }, baseUrlKey: 'OPENAI_COMPAT_BASE_URL' },
+  github: { modeKey: 'AGENT_AUTH_GITHUB_MODE', credentialKey: { 'gh-token': 'GITHUB_COPILOT_TOKEN' } },
+};
+
+export async function computeRunAuth(providerKind: ProviderKind = 'anthropic'): Promise<RunAuth> {
+  const def = PROVIDER_AUTH[providerKind];
+  const mode = String(cfg(def.modeKey));
+  const out: RunAuth = { providerKind, mode };
+  const baseUrl = def.baseUrlKey ? String(cfg(def.baseUrlKey) ?? '').trim() : '';
+  if (baseUrl) out.baseUrl = baseUrl;
+  const key = def.credentialKey[mode];
+  if (key) {
+    const credential = await resolveCredential(key);
+    if (credential) {
+      out.credential = credential;
+      // v1 shim (one release): a previous-release worker reads these off `auth`.
+      if (providerKind === 'anthropic') out[mode === 'api-key' ? 'apiKey' : 'oauthToken'] = credential;
+    }
+  }
+  return out;
+}
+
+/** Every provider's auth, for RunContext.auths. The worker uses only the one its
+ * task's runtime talks to. A provider that fails to resolve is left out (that run
+ * then fails clearly in the worker) rather than failing every run's context. */
+export async function computeRunAuths(): Promise<Partial<Record<ProviderKind, RunAuth>>> {
+  const entries = await Promise.all(PROVIDER_KINDS.map(async (k) => [k, await computeRunAuth(k).catch(() => null)] as const));
+  return Object.fromEntries(entries.filter(([, v]) => v !== null));
+}
+
+export interface ProviderAuthStatus { mode: string; credentialPresent: boolean }
+
+/**
+ * The current auth mode per provider + whether the credential each mode needs is
+ * resolvable, WITHOUT the credentials. The worker polls this at boot and on
+ * heartbeat to register (or re-register) in the right mode; the real credential
+ * test happens on the first spawn, which gets the resolved value via the run
+ * context. The top-level mode/credentialPresent are anthropic's, unchanged, so a
+ * previous-release worker keeps reading them.
+ */
+export async function describeAgentAuth(): Promise<ProviderAuthStatus & { providers: Record<ProviderKind, ProviderAuthStatus> }> {
+  const providers = Object.fromEntries(await Promise.all(PROVIDER_KINDS.map(async (k) => [k, await describeOne(k)] as const))) as Record<ProviderKind, ProviderAuthStatus>;
+  return { ...providers.anthropic, providers };
+}
+
+async function describeOne(providerKind: ProviderKind): Promise<ProviderAuthStatus> {
+  const def = PROVIDER_AUTH[providerKind];
+  const mode = String(cfg(def.modeKey));
+  const key = def.credentialKey[mode];
+  if (!key) return { mode, credentialPresent: true }; // vertex/bedrock/chatgpt/none carry no credential here
+  const value = await resolveCredential(key).catch(() => '');
+  return { mode, credentialPresent: value.length > 0 };
+}
+
+async function resolveCredential(key: CredentialKey): Promise<string> {
+  return (await resolveProviderSecret(String(cfg(key) ?? ''))).trim();
+}
+
+// Keep the api's table and the shared mode list in lockstep (agent-auth.test.ts asserts it).
+export const _AUTH_MODES = AUTH_MODES;

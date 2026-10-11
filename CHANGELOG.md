@@ -1,0 +1,62 @@
+# Changelog
+
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Every merge to main
+publishes a `vX.Y.Z` release of the GHCR images
+(`ghcr.io/rag-against-the-machine/asf-*`); see [`docs/UPGRADING.md`](docs/UPGRADING.md).
+
+## [Unreleased]
+
+## [1.0.0] - 2026-10-11
+
+First public release, under the MIT license. Everything below shipped before the
+repository went public (earlier versions were published as private v0.x images).
+
+### Added
+- Open-source release under the MIT license: `LICENSE`, `NOTICE`, `CONTRIBUTING.md`,
+  `CODE_OF_CONDUCT.md`, `SECURITY.md`, issue/PR templates, CODEOWNERS and Dependabot.
+- `docs/CLAUDE_USAGE.md`: which Claude credential to use under Anthropic's terms. Settings
+  now recommends a Claude API key, labels a subscription as personal use, and warns (in
+  Settings, `/api/setup/status` and `asf doctor`) when a subscription token serves a
+  multi-operator factory (`AUTH_MODE=header`).
+- Themes (M12): the agent crew gets names, pictures, lines and an accent colour.
+  Two built-ins: **classic** (the default) and **hive** (The Queen, Scout,
+  Builder, Guard, Inspector). Custom themes upload as a zip. Pick one in
+  Settings → "How should the factory look?" or set `THEME`. See
+  [`docs/THEMES.md`](docs/THEMES.md).
+- The crew stage on each job page: the member with the work is lit and animated,
+  handoffs fly from the orchestrator, and a caption says what is happening.
+  Respects reduced motion.
+- A crew strip on each "Working on now" row ("Builder is writing code").
+- A theme can set the app title (`appTitle`, shown in the sidebar and browser
+  tab) and the page colours (`background`, `text`; refused below 4.5:1
+  contrast). The Hive is now "The Hive Mind", warm dark with cream text.
+
+### Changed
+- Every merge to main cuts a semver release. Factory commits are now
+  `<type>: <KEY> <title>` and PR titles `<type>: <KEY>: <title>`, with the
+  Conventional Commits type taken from a `Change-Type:` line the reviewer (else
+  the planner) writes; default `fix`. The `images` workflow bumps major for
+  `!`/`BREAKING CHANGE`, minor for `feat`, patch otherwise, and tags the images
+  `vX.Y.Z`, `X.Y.Z`, `X.Y` and `latest` once all three are built. So the
+  update check now sees new releases. Pushing a `v*` tag by hand no longer builds
+  images.
+- Agent avatars are now a theme's crew pictures. Migration `018_theme` copies
+  existing avatars onto the classic theme.
+- `pnpm lint` is clean and runs in CI.
+
+## [0.1.0] - 2026-09-22
+
+First tagged release. Cutting this `v0.1.0` tag publishes the GHCR service
+images so a self-hosted install pulls prebuilt images instead of building.
+
+### Added
+- One-command install (M10): `scripts/setup.sh` interactive wizard (prereq
+  checks → generated `.env` → `compose up` → health wait → next steps) and a
+  `scripts/asf` operator CLI (`up`/`down`/`restart`/`logs`/`status`/`doctor`/
+  `update`/`backup`/`restore`/`reset`/`open`).
+- Prebuilt multi-arch service images published to GHCR on push to `main` and on
+  `v*` tags; installs pull them via compose `image:` instead of building locally
+  (`build:` stays for contributors — `asf update --from-source`).
+- `ASF_VERSION` pins the image tag in `docker-compose.self-host.yml`
+  (defaults to `latest`).

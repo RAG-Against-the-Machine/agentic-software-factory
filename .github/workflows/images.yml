@@ -1,0 +1,133 @@
+# Build and publish the three service images to GHCR so installs pull instead of
+# building locally. Every push to main cuts a semver release: scripts/next-version.sh
+# reads the Conventional Commits since the last vX.Y.Z tag (feat -> minor, `!` or a
+# BREAKING CHANGE footer -> major, anything else -> patch), the three images are built
+# as `sha-<sha>`, and once all three are pushed they are retagged `vX.Y.Z`, `X.Y.Z`,
+# `X.Y` and `latest` and the git tag is pushed.
+name: images
+on:
+  push:
+    branches: [main]
+
+# One run at a time, in turn (never cancelled mid-release), so two merges can't
+# compute the same version. A run that waits sees the tag the one before it pushed.
+concurrency:
+  group: images
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      sha: ${{ steps.v.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags
+      - id: v
+        run: |
+          echo "version=$(scripts/next-version.sh)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [registry, api, worker]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/asf-${{ matrix.service }}
+          tags: |
+            type=raw,value=sha-${{ needs.version.outputs.sha }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+
+      # Every image knows its own version (ASF_BUILD_VERSION, read by the api's update
+      # check): the release it is about to be tagged as.
+      # The worker also pins the Claude Code and Codex CLIs at build time (see apps/worker/Dockerfile).
+      - id: build-args
+        run: |
+          {
+            echo "build_args<<EOF"
+            echo "ASF_BUILD_VERSION=${{ needs.version.outputs.version }}"
+            if [ "${{ matrix.service }}" = worker ]; then
+              echo "CLAUDE_CODE_VERSION=2.1.284"
+              echo "CODEX_VERSION=0.159.0"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/${{ matrix.service }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ steps.build-args.outputs.build_args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Only once all three images are pushed: a release is never half-published.
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the git tag
+      packages: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      SHA: ${{ needs.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: retag the images
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          v="${VERSION#v}"
+          # Image names must be lowercase, and the org is RAG-Against-the-Machine. The build
+          # job gets this for free from docker/metadata-action; plain docker does not.
+          owner="${OWNER,,}"
+          for svc in registry api worker; do
+            img="ghcr.io/$owner/asf-$svc"
+            docker buildx imagetools create \
+              -t "$img:$VERSION" -t "$img:$v" -t "$img:${v%.*}" -t "$img:latest" \
+              "$img:sha-$SHA"
+          done
+
+      - name: push the git tag
+        run: |
+          git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null || git tag "$VERSION"
+          git push origin "refs/tags/$VERSION"
