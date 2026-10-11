@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Multi-stage: build the workspace once, then copy one app's pruned production tree.
-FROM node:22-slim AS build
+FROM node:25-slim AS build
 RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
 WORKDIR /src
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
@@ -16,7 +16,7 @@ RUN pnpm --filter @asf/worker --prod deploy --legacy /out
 # Debian 13 (trixie), not the bookworm default: the worker needs git >= 2.42 for
 # `git worktree add --orphan` (first delivery into an empty repo). Bookworm ships
 # 2.39, and not even bookworm-backports has a newer one.
-FROM node:22-trixie-slim
+FROM node:25-trixie-slim
 # Pin the Claude Code CLI so an image build is reproducible. Bump deliberately;
 # the worker logs the resolved `claude --version` in its `starting` event.
 # Newer models need a minimum CLI (claude-opus-5-5 needs >= 2.1.280). Keep this in
