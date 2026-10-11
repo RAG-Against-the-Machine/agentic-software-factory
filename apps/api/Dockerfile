@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Multi-stage: build the workspace once, then copy one app's pruned production tree.
-FROM node:22-slim AS build
+FROM node:25-slim AS build
 RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
 WORKDIR /src
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
@@ -13,7 +13,7 @@ RUN pnpm --filter @asf/shared build
 RUN pnpm --filter @asf/api build && pnpm --filter @asf/web build
 RUN pnpm --filter @asf/api --prod deploy --legacy /out
 
-FROM node:22-slim
+FROM node:25-slim
 WORKDIR /app
 COPY --from=build /out/dist ./apps/api/dist
 COPY --from=build /out/node_modules ./apps/api/node_modules
