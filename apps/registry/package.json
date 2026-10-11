@@ -9,7 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch src/index.ts",
-    "test": "node --test --test-timeout=20000 --import tsx src/db/*.test.ts src/runs/*.test.ts src/*.test.ts"
+    "test": "node --test --test-timeout=20000 --import tsx src/db/*.test.ts src/runs/*.test.ts src/settings/*.test.ts src/*.test.ts"
   },
   "dependencies": {
     "@asf/shared": "workspace:*",
