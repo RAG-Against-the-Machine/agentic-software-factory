@@ -6,6 +6,7 @@ import { resolveIdentity } from '../identity.js';
 import { checkCredentials, forgetCredentialHealth, lastCredentialHealth, withHealth } from '../credential-health.js';
 import { resetPreflightCache } from '../provider-preflights.js';
 import { checkOpenAiKey } from '../openai-check.js';
+import { catalogue } from '../models.js';
 import type { TicketProviderRegistry } from '../providers/tickets/registry.js';
 import type { ScmProviderRegistry } from '../providers/scm/registry.js';
 
@@ -75,6 +76,13 @@ export function registerAdminRoutes(app: FastifyInstance, deps: { tickets: Ticke
     } catch (e) {
       return { ok: false as const, reason: (e as Error).message };
     }
+  });
+
+  // The models this factory can run: the built-ins merged with MODEL_CATALOG_EXTRA and
+  // narrowed to MODEL_ALLOWLIST. The Settings model pickers read this, not the built-in
+  // list, so a Vertex/Bedrock org only sees the ids enabled on its cloud project.
+  app.get('/api/models', async () => {
+    return { models: catalogue().models };
   });
 
   // "Save and check it works" for the OpenAI key (#162): one tiny real request, a plain answer.

@@ -168,3 +168,20 @@ test('GET /api/fleet passes each worker\'s runtime status through (#69)', async 
   assert.equal(res.json().monthUnpricedRuns, 3, 'the unpriced-run count rides beside the spend (M8 WP H)');
   await a.close();
 });
+
+test('GET /api/models returns the runnable catalogue, narrowed by MODEL_ALLOWLIST', async () => {
+  stubRegistry();
+  const reg = new TicketProviderRegistry(async (k) => fakeProvider(k, async () => ({ ok: true, identity: 'x' })), () => 'mock');
+  const a = await app(reg);
+  const all = (await a.inject({ method: 'GET', url: '/api/models' })).json() as { models: { id: string }[]; providers?: unknown };
+  assert.ok(all.models.some((m) => m.id === 'claude-haiku-4-5'));
+  assert.equal(all.providers, undefined, 'provider base URLs / credential key names stay server-side');
+  const before = process.env.MODEL_ALLOWLIST;
+  process.env.MODEL_ALLOWLIST = 'claude-sonnet-5';
+  try {
+    const narrowed = (await a.inject({ method: 'GET', url: '/api/models' })).json() as { models: { id: string }[] };
+    assert.deepEqual(narrowed.models.map((m) => m.id), ['claude-sonnet-5']);
+  } finally {
+    if (before === undefined) delete process.env.MODEL_ALLOWLIST; else process.env.MODEL_ALLOWLIST = before;
+  }
+});

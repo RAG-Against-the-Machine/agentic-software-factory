@@ -127,6 +127,7 @@ export const api = {
   deleteSetting: (key: string) => fetch(`/api/settings/${encodeURIComponent(key)}`, { method: 'DELETE' }).then(j<{ settings: SettingView[] }>),
   ticketPreflight: () => fetch('/api/providers/ticket/preflight').then(j<{ kind?: string; ok: boolean; identity?: string; reason?: string }>),
   scmPreflight: () => fetch('/api/providers/scm/preflight').then(j<{ kind?: string; ok: boolean; identity?: string; reason?: string }>),
+  models: () => fetch('/api/models').then(j<{ models: { id: string; label: string; tier: string; providerId: string; runtimes: string[] }[] }>),
   openaiCheck: () => fetch('/api/providers/openai/check').then(j<{ ok: boolean; identity?: string; reason?: string; code?: string }>),
   fleet: () => fetch('/api/fleet').then(j<Fleet>),
   setupStatus: () => fetch('/api/setup/status').then(j<SetupStatus>),

@@ -63,3 +63,12 @@ test('M12: a theme card shows the coordinator first, pictures where uploaded and
   assert.match(html, /Uploaded/);
   assert.match(html, /The crew is called The Hive\./);
 });
+
+test('the Models question never silently swaps a saved model that is not in the catalogue', () => {
+  const modelsQ = LATER.find((q) => q.id === 'models')!;
+  const html = renderToStaticMarkup(<modelsQ.Body store={withSettings({ MODEL_DEFAULT_PLANNER: 'claude-haiku-4-5@20251001', MODEL_DEFAULT_TESTER: 'claude-sonnet-5' })} actions={() => null} />);
+  assert.match(html, /<option value="claude-haiku-4-5@20251001" selected="">claude-haiku-4-5@20251001 \(not available\)<\/option>/);
+  assert.equal((html.match(/not available/g) ?? []).length, 1, 'a model in the catalogue gets no marker');
+  // the collapsed summary names an unknown id instead of "?"
+  assert.match(renderToStaticMarkup(<>{modelsQ.summary(withSettings({ MODEL_DEFAULT_PLANNER: 'x@1', MODEL_DEFAULT_IMPLEMENTER: 'x@1', MODEL_DEFAULT_TESTER: 'claude-sonnet-5', MODEL_DEFAULT_REVIEWER: 'claude-sonnet-5' }).byKey)}</>), /x@1/);
+});

@@ -1,6 +1,7 @@
 import type { PipelineStage, PipelineStagesConfig, StageConfig } from './pipeline.js';
 import { PIPELINE_STAGES, DEFAULT_STAGE_GATES } from './pipeline.js';
 import type { GateMode } from './team.js';
+import { substituteModel, type ModelInfo } from './models.js';
 
 /**
  * The web UI's settings model: plain-language QUESTIONS, not a table of keys.
@@ -48,6 +49,7 @@ export const UI_ENV_ONLY: Readonly<Record<string, string>> = {
   GITHUB_COPILOT_TOKEN: 'operator: set in .env',
   // Model catalogue as data (M8 WP D). The AI question sets the per-role runtime as a whole team (#162); a per-role picker is #69.
   MODEL_CATALOG_EXTRA: 'advanced model catalogue (JSON, Admin)',
+  MODEL_ALLOWLIST: 'which models the factory may run (Admin); the Vertex AI setup question will set it',
   STALE_AFTER_MIN: 'operator tuning',
   WORKER_TTL_SECONDS: 'operator tuning',
   EVENT_RETENTION_DAYS: 'operator tuning',
@@ -158,14 +160,18 @@ export function detectTeamAi(get: (key: string) => unknown): TeamAi {
  * role's model reset to that AI's default when the current model can't run there
  * (a model the operator already picked for that AI is kept).
  */
-export function teamAiWrites(ai: TeamAi, get: (key: string) => unknown, models: ReadonlyArray<{ id: string; runtimes: string[] }>): Array<[string, string]> {
+export function teamAiWrites(ai: TeamAi, get: (key: string) => unknown, models: ReadonlyArray<{ id: string; runtimes: string[]; tier?: string }>): Array<[string, string]> {
   const runtime = TEAM_AI_RUNTIME[ai];
   const out: Array<[string, string]> = [];
   for (const r of TEAM_ROLES) {
     if (String(get(`RUNTIME_DEFAULT_${r}`) ?? '') !== runtime) out.push([`RUNTIME_DEFAULT_${r}`, runtime]);
     const cur = String(get(`MODEL_DEFAULT_${r}`) ?? '');
     const fits = models.find((m) => m.id === cur)?.runtimes.includes(runtime);
-    if (!fits) out.push([`MODEL_DEFAULT_${r}`, TEAM_AI_MODELS[ai][r]]);
+    if (!fits) {
+      // The AI's default for the role, or (under MODEL_ALLOWLIST) an allowed model of the same tier.
+      const target = substituteModel(TEAM_AI_MODELS[ai][r], runtime, models as ModelInfo[]);
+      if (target && target !== cur) out.push([`MODEL_DEFAULT_${r}`, target]);
+    }
   }
   return out;
 }

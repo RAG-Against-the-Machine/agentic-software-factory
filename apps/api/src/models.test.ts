@@ -104,3 +104,47 @@ test('MODEL_DEFAULT_<ROLE> may name an extra model; an unknown one is refused', 
   assert.equal(d.runtimes.implementer, 'codex');
   assert.throws(() => defaultRoleModels(STANDARD_TEAM, { implementer: 'deepseek-chat' }, {}, {}), BadModelError, 'not in the built-in catalogue');
 });
+
+test('MODEL_ALLOWLIST narrows the catalogue and refuses an unlisted model by name', () => {
+  const before = process.env.MODEL_ALLOWLIST;
+  process.env.MODEL_ALLOWLIST = 'claude-opus-4-8, claude-sonnet-5';
+  try {
+    assert.deepEqual(catalogue().models.map((m) => m.id).sort(), ['claude-opus-4-8', 'claude-sonnet-5']);
+    assert.equal(resolveRoleModels(STANDARD_TEAM, {}, undefined).roles.find((r) => r.role === 'tester')!.model, 'claude-sonnet-5');
+    assert.throws(() => resolveRoleModels(STANDARD_TEAM, {}, { tester: 'claude-haiku-4-5' }), (e: Error) =>
+      e instanceof BadModelError && /not on this factory's allowed model list/.test(e.message) && /claude-sonnet-5/.test(e.message) && !/haiku/.test(e.message.split('choose one of')[1]));
+    assert.throws(() => resolveRoleModels(STANDARD_TEAM, {}, { tester: 'claude-nope' }), /unknown model "claude-nope"/);
+  } finally {
+    if (before === undefined) delete process.env.MODEL_ALLOWLIST; else process.env.MODEL_ALLOWLIST = before;
+  }
+});
+
+test('a template default hidden by MODEL_ALLOWLIST falls back to an allowed model of the same tier', () => {
+  const before = process.env.MODEL_ALLOWLIST;
+  process.env.MODEL_ALLOWLIST = 'claude-haiku-4-5, claude-sonnet-5';
+  try {
+    // fresh install: no MODEL_DEFAULT_<ROLE>; template = opus-4-8 (max) for plan/implement
+    const team = resolveRoleModels(STANDARD_TEAM, {}, undefined);
+    const m = (role: string) => team.roles.find((r) => r.role === role)!.model;
+    assert.equal(m('planner'), 'claude-sonnet-5', 'max -> nearest allowed tier (balanced)');
+    assert.equal(m('implementer'), 'claude-sonnet-5');
+    assert.equal(m('tester'), 'claude-sonnet-5', 'an allowed template default is kept');
+    // an override for one role leaves the others substituted, not failing
+    assert.equal(resolveRoleModels(STANDARD_TEAM, {}, { tester: 'claude-haiku-4-5' }).roles.find((r) => r.role === 'tester')!.model, 'claude-haiku-4-5');
+    // an explicit org pick is never substituted
+    assert.throws(() => resolveRoleModels(STANDARD_TEAM, { planner: 'claude-opus-4-8' }, undefined), /not on this factory's allowed model list/);
+    assert.doesNotThrow(() => defaultRoleModels(STANDARD_TEAM, {}, {}));
+  } finally {
+    if (before === undefined) delete process.env.MODEL_ALLOWLIST; else process.env.MODEL_ALLOWLIST = before;
+  }
+});
+
+test('an allowlist that matches nothing refuses with a clear reason, not a TypeError', () => {
+  const before = process.env.MODEL_ALLOWLIST;
+  process.env.MODEL_ALLOWLIST = 'typo-model';
+  try {
+    assert.throws(() => defaultRoleModels(STANDARD_TEAM, {}, {}), (e: Error) => e instanceof BadModelError && /no allowed model can run the planner step/.test(e.message) && /MODEL_DEFAULT_PLANNER/.test(e.message));
+  } finally {
+    if (before === undefined) delete process.env.MODEL_ALLOWLIST; else process.env.MODEL_ALLOWLIST = before;
+  }
+});
