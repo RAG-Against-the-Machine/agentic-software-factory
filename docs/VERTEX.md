@@ -71,10 +71,31 @@ of [`SELF_HOSTING.md`](SELF_HOSTING.md).
 > with `GCLOUD_CONFIG_DIR`). Host-worker mode is simpler because the file is just
 > *there* — no mount, no image rebuild.
 
+## When the Google login expires
+
+Every worker in `vertex` mode re-checks its Google login every `AGENT_AUTH_RECHECK_MS`
+(5 minutes by default) by refreshing an access token. That is free: no model call. If
+Google says the login has expired or was revoked (or no login is found, twice in a row):
+
+- the worker **stops taking Claude tasks** but stays connected, and the setup checklist
+  says why;
+- you get **one** notification (web inbox and any notifier you set up), not one per check;
+- a task that fails because of it says so in plain words.
+
+Run `gcloud auth application-default login` on that computer. The worker notices within
+about 5 minutes, checks Claude for real, and takes work again: no restart. Then press
+**Retry role** on any run that failed meanwhile.
+
+A service-account key that stops working is reported the same way, with the fix
+"put a fresh key where `GOOGLE_APPLICATION_CREDENTIALS` points". Credential types the
+worker can't refresh itself (workload identity federation, impersonation) are not watched:
+the worker logs that once, and an expiry then shows up only as failed tasks. Bedrock is
+not covered by this check.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | Worker won't register; log says `AGENT_AUTH_MODE=vertex needs ANTHROPIC_VERTEX_PROJECT_ID` | The project id isn't set | Set `ANTHROPIC_VERTEX_PROJECT_ID` in the environment and restart the worker. |
-| Runs fail with an auth/permission error after working for a while | **ADC expired** (or was revoked) | Re-run `gcloud auth application-default login` on the host. ADC is refreshed by re-authenticating; there is nothing to change in ASF. |
+| Notification "Google login on worker … stopped working"; the setup checklist says the worker can't run Claude; a task failed with "The Google login … has expired" | **ADC expired** or was revoked (company accounts often must sign in again every day or so) | Run `gcloud auth application-default login` on the computer running that worker. See [When the Google login expires](#when-the-google-login-expires). |
 | Model-not-found / not-enabled errors | The Claude model or region isn't enabled on the project | Enable the model in Model Garden, or point `CLOUD_ML_REGION` at a region where it is. |

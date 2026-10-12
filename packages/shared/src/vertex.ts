@@ -125,3 +125,28 @@ export function vertexWrites(a: { projectId: string; region: string; selected: r
     ['AGENT_AUTH_MODE', 'vertex'],
   ];
 }
+
+// ── Login expiry (M9 #2) ─────────────────────────────────────────────────────
+
+/**
+ * Does this agent failure text say the Google login is gone? (Claude Code on
+ * Vertex surfaces the auth library's error: a refresh token revoked or past the
+ * company's session limit, a reauth demand, or no credentials at all.)
+ */
+export function isGoogleLoginFailure(text: string | null | undefined): boolean {
+  if (!text) return false;
+  // Google's own error shapes only: a hint the caller always double-checks with a
+  // real token refresh (LoginWatch.confirm) before calling a task "login expired".
+  return /\binvalid_grant\b|\binvalid_rapt\b|Reauthentication (is )?(needed|required|failed)|Could not load the default credentials|Request had invalid authentication credentials|"status": ?"UNAUTHENTICATED"|Token has been expired or revoked/i.test(text);
+}
+
+/** The fix for a Google login that stopped working on `worker` (by ADC type: a service-account key is replaced, not signed into). */
+export function googleLoginFix(worker: string, kind?: string, recheckMinutes = 5): string {
+  const after = `The worker notices by itself within about ${recheckMinutes} minutes; no restart needed.`;
+  return kind === 'service_account'
+    ? `The worker's service-account key no longer works (deleted or disabled): put a fresh key where GOOGLE_APPLICATION_CREDENTIALS points on the computer running worker ${worker}. ${after}`
+    : `On the computer running worker ${worker}, run: gcloud auth application-default login. ${after}`;
+}
+
+/** The credential-health key for one worker's Google login (each worker host has its own). */
+export const googleLoginHealthKey = (worker: string): string => `google-login:${worker}`;

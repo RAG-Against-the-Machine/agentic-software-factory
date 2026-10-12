@@ -33,8 +33,19 @@ test('a heartbeat carries the runtime status to the registry (#69)', async () =>
   let sent: unknown = null;
   globalThis.fetch = (async (_url: string, init?: RequestInit) => { sent = JSON.parse(String(init?.body)); return new Response('{}', { status: 200 }); }) as typeof fetch;
   const preflight = [{ kind: 'codex', installed: true, version: '0.5.0', ok: false, reason: 'no key', checkedAt: '2026-01-01T00:00:00.000Z' }];
-  assert.equal(await api.heartbeat(preflight), true);
+  assert.equal(await api.heartbeat(preflight), 'ok');
   assert.deepEqual(sent, { preflight });
+});
+
+test('a heartbeat answers \'unknown\' on 404 (registry lost the worker), \'error\' on other failures and on a network throw', async () => {
+  reply(404, { error: 'unknown worker' });
+  assert.equal(await api.heartbeat(), 'unknown');
+  reply(500, { error: 'boom' });
+  assert.equal(await api.heartbeat(), 'error');
+  reply(401);
+  assert.equal(await api.heartbeat(), 'error', 'a non-404 refusal is not \'unknown\'');
+  globalThis.fetch = (async () => { throw new Error('network down'); }) as typeof fetch;
+  assert.equal(await api.heartbeat(), 'error');
 });
 
 test('listAdhoc returns the registry\'s tasks, or [] on an older registry / transport error', async () => {

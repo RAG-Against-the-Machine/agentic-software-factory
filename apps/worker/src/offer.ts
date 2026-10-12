@@ -41,6 +41,8 @@ interface Candidate {
   checkedAt: number;
   /** Why the last preflight failed. */
   reason?: string;
+  /** Held back by the login watch (M9 #2): not offered, and not re-preflighted, until resumed. */
+  suspended?: boolean;
 }
 
 const sigOf = (v: ProviderAuthView | null): string => (v ? `${v.mode}|${v.credentialPresent ? 1 : 0}${v.vertex ? `|${JSON.stringify(v.vertex)}` : ''}` : 'none');
@@ -63,6 +65,29 @@ export class RuntimeOffer {
   get kinds(): string[] { return this.candidates.filter((c) => c.offered).map((c) => c.runtime.kind); }
   get offered(): Array<{ runtime: AgentRuntime; provider: ProviderKind; mode: string }> { return this.candidates.filter((c) => c.offered); }
   get pending(): string[] { return this.candidates.filter((c) => !c.offered).map((c) => c.runtime.kind); }
+
+  /**
+   * The provider's login stopped working (M9 #2: a Google login past its session
+   * limit). Stop offering its runtimes and hold them, so the timed re-check doesn't
+   * spend a model call on a login known to be dead. Returns true if the offered set changed.
+   */
+  suspend(provider: ProviderKind, reason: string): boolean {
+    let changed = false;
+    for (const c of this.candidates) {
+      if (c.provider !== provider) continue;
+      if (c.offered) changed = true;
+      c.offered = false; c.suspended = true; c.reason = reason; c.checkedAt = this.now();
+    }
+    return changed;
+  }
+
+  /** The login works again: re-check the held runtimes on the next refresh (a real preflight decides). */
+  resume(provider: ProviderKind): void {
+    for (const c of this.candidates) {
+      if (c.provider !== provider || !c.suspended) continue;
+      c.suspended = false; c.checkedSig = null;
+    }
+  }
 
   /** A configured runtime that did not probe (CLI missing or failed to load): reported, never offered. */
   notInstalled(kind: string, reason: string): void {
@@ -101,11 +126,12 @@ export class RuntimeOffer {
         if (!view || c.checkedSig === null || sig === c.checkedSig) continue;
         c.checkedSig = sig; c.checkedAt = this.now();
         const res = await this.preflight(c.runtime, { providerKind: c.provider, mode: view.mode, ...(view.vertex ? { vertex: view.vertex } : {}) } as RunAuth, { credentialPresent: view.credentialPresent });
-        if (res.ok) { c.mode = view.mode; continue; }
+        if (res.ok || c.suspended) { if (res.ok) c.mode = view.mode; continue; }
         c.offered = false; c.reason = res.reason ?? 'auth check failed'; changed = true;
         this.log(`agent auth changed and the new setup failed its check for ${c.runtime.kind} (${c.provider} ${view.mode}): ${res.reason}; no longer offering it`);
         continue;
       }
+      if (c.suspended) continue;
       const due = c.checkedSig === null || sig !== c.checkedSig || this.now() - c.checkedAt >= this.recheckMs;
       if (!due) continue;
       const mode = view?.mode ?? fallbackMode(c.provider);
@@ -113,6 +139,7 @@ export class RuntimeOffer {
       const viewChanged = !first && sig !== c.checkedSig;
       c.checkedSig = sig; c.checkedAt = this.now();
       const res = await this.preflight(c.runtime, { providerKind: c.provider, mode, ...(view?.vertex ? { vertex: view.vertex } : {}) } as RunAuth, { credentialPresent: view?.credentialPresent ?? false });
+      if (c.suspended) continue; // the login watch held it while this preflight ran: it wins
       if (!res.ok) {
         c.reason = res.reason ?? 'auth check failed';
         // Log the first failure and any failure after a change; a timed re-try that fails the same way stays quiet.

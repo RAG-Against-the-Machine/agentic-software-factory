@@ -92,4 +92,5 @@ export const RUN_EVENT_KINDS = [
   'change_request:opened', 'change_request:updated', 'change_request:feedback', 'change_request:ready', 'change_request:merged', 'change_request:closed',
   'run:stale', 'run:cancelled', 'run:failed', 'run:succeeded', 'run:split',
   'publish:conflict', 'conflict:merging', 'conflict:resolved',
+  'auth:expired',
 ] as const;

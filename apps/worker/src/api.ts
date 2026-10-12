@@ -1,4 +1,5 @@
 import type { VertexCheckRequest, VertexCheckResult } from '@asf/shared';
+import { googleLoginHealthKey } from '@asf/shared';
 import type { AdhocTask, ClaimResponse, CreateAdhocInput, FinishTaskInput, RunContext, RunMessageInput, RunMessageWire, RuntimeStatus, WorkerRegister } from '@asf/shared';
 import { claimResponseSchema, runContextSchema } from '@asf/shared';
 import { config } from './config.js';
@@ -33,9 +34,10 @@ export const api = {
     return post(config.registryUrl, '/workers/register', { id: config.id, host: config.host, ...reg }) as Promise<{ staled: string[] }>;
   },
   /** Alive, plus the latest status of every configured runtime (#69). */
-  async heartbeat(preflight?: RuntimeStatus[]): Promise<boolean> {
-    const res = await fetch(`${config.registryUrl}/workers/${config.id}/heartbeat`, { method: 'POST', headers: headers(), body: JSON.stringify(preflight ? { preflight } : {}) });
-    return res.ok;
+  /** 'unknown' = the registry has no record of this worker (404): register again. */
+  async heartbeat(preflight?: RuntimeStatus[]): Promise<'ok' | 'unknown' | 'error'> {
+    const res = await fetch(`${config.registryUrl}/workers/${config.id}/heartbeat`, { method: 'POST', headers: headers(), body: JSON.stringify(preflight ? { preflight } : {}) }).catch(() => null);
+    return !res ? 'error' : res.ok ? 'ok' : res.status === 404 ? 'unknown' : 'error';
   },
   /** The api's current effective auth mode (+ whether its credential is present, never
    * the credential). Used at boot and to notice an org-side mode change and re-register
@@ -54,6 +56,13 @@ export const api = {
   },
   async vertexCheckResult(id: string, result: VertexCheckResult): Promise<void> {
     await post(config.bffUrl, `/api/agent-checks/vertex/${encodeURIComponent(id)}`, { worker: config.id, result });
+  },
+  /** M9 #2: this worker's Google login health; the first failure of a streak notifies once. */
+  async recordLoginHealth(h: { ok: boolean; reason: string | null; fix?: string }): Promise<void> {
+    await post(config.registryUrl, '/internal/rpc', {
+      op: 'recordCredentialHealth', key: googleLoginHealthKey(config.id), ok: h.ok, reason: h.reason,
+      label: `Google login on worker ${config.id}`, link: '/setup', ...(h.fix ? { fix: h.fix } : {}),
+    });
   },
   async deregister(): Promise<void> {
     await fetch(`${config.registryUrl}/workers/${config.id}/deregister`, { method: 'POST', headers: headers(), body: '{}' }).catch(() => {});

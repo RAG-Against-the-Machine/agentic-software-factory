@@ -2,7 +2,7 @@ import { mkdir, writeFile, readFile, rename, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
 import type { AdhocTask, AgentSpawn, ClaimResponse, CreateAdhocInput, EventSink, Run, RunContext, RunTask, RuntimeCapabilities, TeamTemplate, ToolPolicy } from '@asf/shared';
-import { priceUsage, mergeCatalogue, CONFLICT_QUEUED_BY } from '@asf/shared';
+import { priceUsage, mergeCatalogue, CONFLICT_QUEUED_BY, isGoogleLoginFailure, googleLoginFix } from '@asf/shared';
 import { config } from './config.js';
 import { api } from './api.js';
 import { ensureWorkspace, commitPending, diffStat, wipAtHead, startConflictMerge, filesWithConflictMarkers, type Workspace } from './git.js';
@@ -86,6 +86,12 @@ const PRIOR_ARTIFACTS: Record<string, string[]> = {
   reviewer: ['plan.md', 'test-report.md'],
 };
 
+/**
+ * M9 #2: asks the worker's login watch whether the Google login is really gone
+ * (index.ts wires it; until then, and in tests, nothing is confirmed).
+ */
+export const googleLogin: { confirm: () => Promise<boolean> } = { confirm: async () => false };
+
 export interface SegmentResult {
   outcome: 'done' | 'failed' | 'needs_human' | 'timeout';
   reason: string | null;
@@ -93,6 +99,8 @@ export interface SegmentResult {
   outputRef: string | null;
   worktreePath: string | null;
   branchName: string | null;
+  /** M9 #2: the agent failed because the worker's Google login is gone (vertex mode). */
+  googleLoginFailed?: boolean;
 }
 
 /**
@@ -294,6 +302,20 @@ export async function runSegment(claim: ClaimResponse & object, ctx: RunContext,
     }
   }
 
+  // M9 #2: a Vertex run that failed on the Google login says so in plain words, as an
+  // event the run page can show and as the task's reason, instead of a raw auth error.
+  // Only when a real token refresh confirms it (googleLogin.confirm), so a role that
+  // merely mentions such an error keeps its own reason. Confirming also stops this
+  // worker claiming more Claude tasks at once.
+  let googleLoginFailed = false;
+  if ((outcome.outcome === 'failed' || outcome.outcome === 'timeout') && spawnReq.auth?.mode === 'vertex'
+    && isGoogleLoginFailure(outcome.text) && await googleLogin.confirm().catch(() => false)) {
+    googleLoginFailed = true;
+    const reason = `The Google login on worker ${config.id} has expired, so Claude couldn't run. ${googleLoginFix(config.id)} Then press Retry role.`;
+    await api.event(run.id, 'auth:expired', { role: task.role, worker: config.id, provider: 'vertex', reason }, task.id);
+    outcome = { ...outcome, outcome: 'failed' as const, text: reason };
+  }
+
   // What the role SAID: its final result text (capped) + turns/cost, so the UI can
   // show it without shelling into the worker's <role>.log (M11 WP2).
   await api.event(run.id, 'segment:result', {
@@ -367,6 +389,7 @@ export async function runSegment(claim: ClaimResponse & object, ctx: RunContext,
     outputRef,
     worktreePath: ws?.worktreePath ?? null,
     branchName: ws?.branchName ?? null,
+    ...(googleLoginFailed ? { googleLoginFailed } : {}),
   };
 }
 

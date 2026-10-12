@@ -10,7 +10,7 @@ import { ScmProviderRegistry } from '../providers/scm/registry.js';
 // describe, and two registry RPCs (listFleet, listRuns). Stub the registry HTTP
 // layer (mirrors admin.test.ts) and drive the providers with fake registries.
 const realFetch = global.fetch;
-const ENV_KEYS = ['TICKET_PROVIDER', 'SCM_PROVIDER', 'AGENT_AUTH_MODE', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'AUTH_MODE'] as const;
+const ENV_KEYS = ['RUNTIME_DEFAULT_IMPLEMENTER', 'TICKET_PROVIDER', 'SCM_PROVIDER', 'AGENT_AUTH_MODE', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'AUTH_MODE'] as const;
 afterEach(() => {
   global.fetch = realFetch;
   __resetSetupCaches(); // the preflight cache is module-level and time-based; reset between tests
@@ -18,9 +18,11 @@ afterEach(() => {
 });
 
 /** Stub the registry so listFleet/listRuns/getOrgSecret return controllable results. */
-function stubRegistry(opts: { workers?: { id: string; authMode: string | null }[]; succeededRuns?: number } = {}) {
+type PreflightStub = { kind: string; ok: boolean; reason?: string };
+function stubRegistry(opts: { workers?: { id: string; authMode: string | null; preflight?: PreflightStub[]; runtimes?: string[] }[]; succeededRuns?: number } = {}) {
   const workers = (opts.workers ?? []).map((w) => ({
-    id: w.id, host: 'h', runtimes: ['claude-code'], authMode: w.authMode, maxConcurrent: 1, running: 0, lastHeartbeat: new Date().toISOString(),
+    id: w.id, host: 'h', runtimes: w.runtimes ?? ['claude-code'], authMode: w.authMode, maxConcurrent: 1, running: 0, lastHeartbeat: new Date().toISOString(),
+    ...(w.preflight ? { preflight: w.preflight.map((p) => ({ installed: true, checkedAt: new Date().toISOString(), ...p })) } : {}),
   }));
   const runs = Array.from({ length: opts.succeededRuns ?? 0 }, (_, i) => ({ id: `run_${i}` }));
   global.fetch = (async (_url: string, init?: { body?: string }) => {
@@ -156,6 +158,79 @@ test('a worker on the wrong auth mode is reported as a mismatch, not done', asyn
   assert.equal(item(s, 'worker').done, false);
   assert.match(item(s, 'worker').reason!, /not api-key/);
   await a.close();
+});
+
+const apiKeyMode = () => { process.env.AGENT_AUTH_MODE = 'api-key'; process.env.ANTHROPIC_API_KEY = 'sk-test'; };
+const workerItem = async (): Promise<SetupStatus['items'][number]> => {
+  const a = await app(okTickets(), okScm());
+  const s = status((await a.inject({ method: 'GET', url: '/api/setup/status' })).json());
+  await a.close();
+  return item(s, 'worker');
+};
+
+test('M9: a matching worker whose Claude check fails is not ready: the reason names the worker and its preflight reason', async () => {
+  apiKeyMode();
+  const why = 'Google login on worker w1 stopped working (expired or revoked).';
+  stubRegistry({ workers: [{ id: 'w1', authMode: 'api-key', preflight: [{ kind: 'claude-code', ok: false, reason: why }] }] });
+  const w = await workerItem();
+  assert.equal(w.done, false);
+  assert.match(w.reason!, /w1/);
+  assert.ok(w.reason!.includes(why), w.reason!);
+  assert.doesNotMatch(w.reason!, /ready to run/);
+  assert.equal(w.link, '/workers');
+});
+
+test('M9: the same worker with its Claude check ok is done', async () => {
+  apiKeyMode();
+  stubRegistry({ workers: [{ id: 'w1', authMode: 'api-key', preflight: [{ kind: 'claude-code', ok: true }] }] });
+  const w = await workerItem();
+  assert.equal(w.done, true);
+  assert.match(w.reason!, /w1/);
+});
+
+test('M9: a failing check of another runtime, or an older worker with no preflight, does not block the worker item', async () => {
+  apiKeyMode();
+  stubRegistry({ workers: [{ id: 'w1', authMode: 'api-key', preflight: [{ kind: 'codex', ok: false, reason: 'no OpenAI key' }, { kind: 'claude-code', ok: true }] }] });
+  assert.equal((await workerItem()).done, true);
+  __resetSetupCaches();
+  stubRegistry({ workers: [{ id: 'old', authMode: 'api-key' }] });
+  assert.equal((await workerItem()).done, true);
+});
+
+test('M9: one healthy worker is enough when another matching worker has an expired login', async () => {
+  apiKeyMode();
+  stubRegistry({ workers: [
+    { id: 'down', authMode: 'api-key', preflight: [{ kind: 'claude-code', ok: false, reason: 'login expired' }] },
+    { id: 'up', authMode: 'api-key', preflight: [{ kind: 'claude-code', ok: true }] },
+  ] });
+  const w = await workerItem();
+  assert.equal(w.done, true);
+  assert.match(w.reason!, /up/);
+});
+
+test('M9: a failing worker on a different auth mode is still reported as the mode mismatch', async () => {
+  process.env.AGENT_AUTH_MODE = 'api-key';
+  stubRegistry({ workers: [{ id: 'w1', authMode: 'oauth-token', preflight: [{ kind: 'claude-code', ok: false, reason: 'expired' }] }] });
+  const w = await workerItem();
+  assert.equal(w.done, false);
+  assert.match(w.reason!, /not api-key/);
+});
+
+test('M9: team on OpenAI, a worker offering codex whose codex check is ok:false is not ready; an ok one is', async () => {
+  process.env.RUNTIME_DEFAULT_IMPLEMENTER = 'codex';
+  stubRegistry({ workers: [{ id: 'w1', authMode: 'api-key', runtimes: ['claude-code', 'codex'], preflight: [{ kind: 'codex', ok: false, reason: 'OpenAI key rejected' }] }] });
+  const w = await workerItem();
+  assert.equal(w.done, false);
+  assert.doesNotMatch(w.reason!, /ready to run/);
+  __resetSetupCaches();
+  stubRegistry({ workers: [
+    { id: 'bad', authMode: 'api-key', runtimes: ['codex'], preflight: [{ kind: 'codex', ok: false, reason: 'OpenAI key rejected' }] },
+    { id: 'good', authMode: 'api-key', runtimes: ['codex'], preflight: [{ kind: 'codex', ok: true }] },
+  ] });
+  const ok = await workerItem();
+  assert.equal(ok.done, true);
+  assert.match(ok.reason!, /good/);
+  assert.match(ok.reason!, /OpenAI/);
 });
 
 // Anthropic's terms: one Claude subscription must not serve several operators.

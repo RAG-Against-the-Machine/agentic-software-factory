@@ -81,7 +81,7 @@ export async function mintToken(deps: VertexCheckDeps = {}): Promise<Login | Log
   if (!res) return { ok: false, code: 'unreachable', kind, reason: 'The worker couldn’t reach Google to sign in (oauth2.googleapis.com). Check its internet connection; if your company uses a web proxy, the worker needs it too.' };
   const j = await res.json().catch(() => ({})) as { access_token?: string; error?: string; error_description?: string; error_subtype?: string };
   if (!res.ok || !j.access_token) {
-    if (j.error === 'invalid_grant' || j.error === 'invalid_rapt' || /reauth|rapt|expired|revoked/i.test(`${j.error_description ?? ''} ${j.error_subtype ?? ''}`)) {
+    if (j.error === 'invalid_grant' || j.error === 'invalid_rapt' || j.error_subtype === 'invalid_rapt') {
       return { ok: false, code: 'login_expired', kind, reason: `Your Google login has expired or needs you to sign in again. ${LOGIN_FIX}` };
     }
     return { ok: false, code: 'other', kind, reason: `Google refused the login (${res.status} ${j.error ?? ''} ${j.error_description ?? ''}). ${LOGIN_FIX}`.replace(/\s+/g, ' ') };
