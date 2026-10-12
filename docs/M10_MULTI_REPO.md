@@ -17,9 +17,9 @@ Decisions (Jon, 2026-10-12):
    split). There are no multi-repo runs.
 3. **One Jira project for now.** Several ticket sources at once (several trackers, or Jira
    plus GitLab issues) is a separate axis, out of scope.
-4. **Which repos:** assumed to be every project under a GitLab group, including subgroups,
-   minus an optional exclude list. This covers the hand-picked case too, because explicit
-   `GITLAB_REPOS` stay supported. Not confirmed yet.
+4. **Which repos:** every project under a GitLab group, including all subgroups (for DCP,
+   `aspendental/uiplatform/web`), minus an optional exclude list. Explicit `GITLAB_REPOS`
+   stay supported for single repos outside the group.
 
 ## What already works (no change needed)
 
