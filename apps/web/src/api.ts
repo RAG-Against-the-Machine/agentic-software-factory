@@ -51,6 +51,7 @@ export const api = {
     const qs = p.toString();
     return fetch(`/api/tickets${qs ? `?${qs}` : ''}`).then(j<{ tickets: TicketRow[] }>);
   },
+  findTickets: (q: string, prefixes: string[]) => fetch(`/api/tickets/find?q=${encodeURIComponent(q)}&prefixes=${encodeURIComponent(prefixes.join(','))}`).then(j<{ tickets: TicketRow[] }>),
   ticket: (id: string) => fetch(`/api/tickets/${encodeURIComponent(id)}`).then(j<TicketRow>),
   ticketScopes: () => fetch('/api/tickets/scopes').then(j<TicketScope[]>),
   ticketSprints: (scopeId: string) => fetch(`/api/tickets/scopes/${encodeURIComponent(scopeId)}/sprints`).then(j<TicketSprint[]>),

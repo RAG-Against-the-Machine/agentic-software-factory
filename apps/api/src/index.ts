@@ -24,7 +24,8 @@ import { registerAdminRoutes } from './routes/admin.js';
 import { registerVertexRoutes } from './routes/vertex.js';
 import { registerSetupRoutes } from './routes/setup.js';
 import { registerWorkerRoutes } from './routes/workers.js';
-import { loadOrgSettings, loadOrgSettingsWithRetry, orgSettingsLoaded } from './settings.js';
+import { cfg, loadOrgSettings, loadOrgSettingsWithRetry, orgSettingsLoaded } from './settings.js';
+import { findTicketsByRef } from './tickets/find.js';
 import { assertIdentityConfig } from './identity.js';
 import { ticketsFor } from './tickets/route.js';
 import { registerAdhocRoutes } from './routes/adhoc.js';
@@ -93,6 +94,15 @@ app.get<{ Params: { id: string } }>('/api/tickets/scopes/:id/sprints', async (re
 app.get('/api/tickets/statuses', async (req) => {
   const q = req.query as { scope?: string };
   return tickets.capabilities().statuses ? tickets.listStatuses(q.scope || undefined) : [];
+});
+
+// Find by ticket number across the whole tracker (Planned tasks search): the
+// page's own list is limited to the selected board/sprint and open tickets.
+app.get('/api/tickets/find', async (req) => {
+  const q = req.query as { q?: string; prefixes?: string };
+  const configured = tickets.kind === 'jira' ? String(cfg('JIRA_PROJECTS') ?? '').split(',') : [];
+  const prefixes = [...configured, ...(q.prefixes ?? '').split(',')].map((s) => s.trim()).filter(Boolean);
+  return { tickets: await findTicketsByRef((id) => tickets.get(id), q.q ?? '', prefixes) };
 });
 
 app.get<{ Params: { id: string } }>('/api/tickets/:id', async (req) => ticketsFor(tickets, req.params.id).get(req.params.id));

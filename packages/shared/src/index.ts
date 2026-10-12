@@ -29,3 +29,4 @@ export * from './local-worker.js';
 export * from './recurring.js';
 export * from './updates.js';
 export * from './outcome-tags.js';
+export * from './ticket-search.js';

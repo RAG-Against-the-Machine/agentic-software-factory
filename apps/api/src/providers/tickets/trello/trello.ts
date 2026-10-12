@@ -1,3 +1,4 @@
+import { ticketMatches } from '@asf/shared';
 import type {
   Preflight, Ticket, TicketBucket, TicketComment, TicketLink, TicketListQuery,
   TicketProvider, TicketProviderCapabilities, TicketTransition,
@@ -173,7 +174,7 @@ export class TrelloTicketProvider implements TicketProvider {
     }
     let out = all;
     if (q.bucket?.length) out = out.filter((t) => q.bucket!.includes(t.bucket));
-    if (q.search) out = out.filter((t) => t.title.toLowerCase().includes(q.search!.toLowerCase()));
+    if (q.search) out = out.filter((t) => ticketMatches(t, q.search!));
     out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     // Cursor-page in memory (Trello has no stable list cursor across boards).
     const start = q.cursor ? Number(q.cursor) || 0 : 0;
