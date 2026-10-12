@@ -313,3 +313,26 @@ test('a branch with intermediate commits that a replay would trip on publishes w
   assert.equal((await exec('git', ['show', 'HEAD:cfg.txt'], { cwd: ws.worktreePath })).stdout, 'x=3\n', 'main\'s change kept');
   assert.equal((await exec('git', ['show', 'HEAD:new.txt'], { cwd: ws.worktreePath })).stdout, 'feature\n');
 });
+
+test("the target repo's git hooks (husky pre-commit/pre-push) don't block the worker's commit or push", async () => {
+  const r = run({ id: 'run_hooks001', ticketKey: 'ASF-HK' });
+  const ws = await git.ensureWorkspace(r, repo(), { url: originDir }, () => {});
+  // What husky leaves behind: core.hooksPath=.husky and hooks that need a tool the worker lacks.
+  const hookDir = join(ws.worktreePath, '.husky');
+  await exec('mkdir', ['-p', hookDir]);
+  for (const h of ['pre-commit', 'commit-msg', 'pre-push']) {
+    await writeFile(join(hookDir, h), '#!/bin/sh\necho "pnpm: not found" >&2\nexit 127\n', { mode: 0o755 });
+  }
+  await exec('git', ['config', 'core.hooksPath', '.husky'], { cwd: ws.worktreePath });
+  // Sanity: the hook really fails a plain commit.
+  await writeFile(join(ws.worktreePath, 'plain.txt'), 'y');
+  await exec('git', ['add', '-A'], { cwd: ws.worktreePath });
+  await assert.rejects(exec('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'plain'], { cwd: ws.worktreePath }), /pnpm: not found/);
+  await writeFile(join(ws.worktreePath, 'hooked.txt'), 'x');
+  const sha = await git.commitPending(ws, r, 'implementer', 'with hooks', () => {});
+  assert.ok(sha, 'the worker commit succeeds despite a failing pre-commit hook');
+  await exec('git', ['-C', originDir, 'config', 'receive.denyCurrentBranch', 'ignore']);
+  await git.pushBranch(ws, { url: originDir }, () => {});
+  const pushed = (await exec('git', ['-C', originDir, 'rev-parse', `refs/heads/${ws.branchName}`])).stdout.trim();
+  assert.equal(pushed, sha, 'pushed despite a failing pre-push hook');
+});
