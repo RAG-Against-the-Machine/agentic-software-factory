@@ -18,3 +18,4 @@ export * from './outcome-tags.js';
 export * from './theme.js';
 export * from './themes/index.js';
 export { SKILL_ENTRY_FILE, SKILL_ROLES } from './skills.js';
+export * from './ticket-search.js';

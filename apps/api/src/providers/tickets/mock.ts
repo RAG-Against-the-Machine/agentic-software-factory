@@ -1,3 +1,4 @@
+import { ticketMatches } from '@asf/shared';
 import type { Ticket, TicketComment, TicketLink, TicketListQuery, TicketProvider, TicketTransition } from '@asf/shared';
 
 const now = () => new Date().toISOString();
@@ -34,10 +35,10 @@ export class MockTicketProvider implements TicketProvider {
   async list(q: TicketListQuery) {
     let all = [...this.tickets.values()];
     if (q.bucket?.length) all = all.filter((t) => q.bucket!.includes(t.bucket));
-    if (q.search) all = all.filter((t) => t.title.toLowerCase().includes(q.search!.toLowerCase()));
+    if (q.search) all = all.filter((t) => ticketMatches(t, q.search!));
     return { tickets: all.slice(0, q.limit) };
   }
-  async get(id: string) { const t = this.tickets.get(id); if (!t) throw new Error(`no ticket ${id}`); return t; }
+  async get(id: string) { const t = this.tickets.get(id) ?? this.tickets.get(id.toLowerCase()); if (!t) throw new Error(`no ticket ${id}`); return t; }
   async update(id: string, patch: Partial<Pick<Ticket, 'title' | 'body' | 'priority' | 'labels'>>) {
     const t = { ...(await this.get(id)), ...patch, updatedAt: now() }; this.tickets.set(id, t); return t;
   }

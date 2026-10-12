@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { AdhocTask, TicketScope, TicketSprint } from '@asf/shared';
+import { keyPrefixes, looksLikeTicketRef, ticketMatches } from '@asf/shared/ui';
 import { api, encodeTicketId, type TicketRow } from '../api';
 import { useQuery } from '@tanstack/react-query';
 import { removeAdhoc } from '../new-task';
@@ -142,8 +143,27 @@ export function Backlog() {
   // Search + bucket filter the already-loaded active set — no round trip per keystroke.
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return tickets.filter((t) => (!bucket || t.bucket === bucket) && (!q || t.title.toLowerCase().includes(q)));
+    return tickets.filter((t) => (!bucket || t.bucket === bucket) && (!q || ticketMatches(t, q)));
   }, [tickets, search, bucket]);
+
+  // A ticket number that isn't in the loaded list (another board/sprint, done, or past
+  // the first 200) is looked up in the tracker directly, after a short pause in typing.
+  const [elsewhere, setElsewhere] = useState<TicketRow[]>([]);
+  const [finding, setFinding] = useState(false);
+  useEffect(() => {
+    const q = search.trim();
+    setElsewhere([]);
+    if (!looksLikeTicketRef(q)) { setFinding(false); return; }
+    let alive = true;
+    setFinding(true);
+    const timer = setTimeout(() => {
+      api.findTickets(q, keyPrefixes(tickets.map((t) => t.key)))
+        .then((d) => { if (alive) setElsewhere(d.tickets.filter((t) => !tickets.some((x) => x.id === t.id))); })
+        .catch(() => { if (alive) setElsewhere([]); })
+        .finally(() => { if (alive) setFinding(false); });
+    }, 300);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [search, tickets]);
   useEffect(() => { setPage(0); }, [search, bucket]);
 
   const total = filtered.length;
@@ -211,7 +231,7 @@ export function Backlog() {
             <option value="">Anywhere on the board</option>
             {BUCKETS.map((b) => <option key={b} value={b}>{bucketLabel(b)}</option>)}
           </select>
-          <input placeholder="Search tickets…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: '100%', maxWidth: 220 }} />
+          <input placeholder="Ticket number or title…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: '100%', maxWidth: 220 }} />
           <button className="btn" onClick={() => navigate('/')} title="Describe work that has no ticket in your tracker">New task</button>
         </span>
       </div>
@@ -279,9 +299,23 @@ export function Backlog() {
                 </tr>
               );
             })}
-            {total === 0 && (
+            {elsewhere.map((t) => {
+              const open = () => navigate(`/dispatch/${encodeTicketId(t.id)}`);
+              return (
+                <tr key={`found:${t.id}`} className="clickable" tabIndex={0} role="link" onClick={open}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) open(); }}>
+                  <td />
+                  <td className="mono">{t.key}</td>
+                  <td>{t.title} <span className="muted">(not in this view)</span></td>
+                  <td><span className={t.bucket === 'done' ? 'pill done' : 'pill'}>{t.bucket === 'done' ? t.status : bucketLabel(t.bucket)}</span></td>
+                  <td className="muted">{t.priority ?? '—'}</td>
+                </tr>
+              );
+            })}
+            {total === 0 && elsewhere.length === 0 && (
               <tr><td colSpan={5} className="muted" style={{ padding: 32, textAlign: 'center' }}>
-                {loading ? <span className="spinner lg" aria-label="Loading" /> : 'No open tickets.'}
+                {loading || finding ? <span className="spinner lg" aria-label="Loading" />
+                  : search.trim() ? `No ticket matches “${search.trim()}”.` : 'No open tickets.'}
               </td></tr>
             )}
           </tbody>

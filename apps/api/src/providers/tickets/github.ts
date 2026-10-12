@@ -1,3 +1,4 @@
+import { ticketMatches } from '@asf/shared';
 import type {
   Preflight, Ticket, TicketBucket, TicketComment, TicketLink, TicketListQuery,
   TicketProvider, TicketProviderCapabilities, TicketTransition,
@@ -217,7 +218,7 @@ export class GithubTicketProvider implements TicketProvider {
       out = out.filter((t) => Date.parse(t.updatedAt) >= cutoff);
     }
     if (q.bucket?.length) out = out.filter((t) => q.bucket!.includes(t.bucket));
-    if (q.search) out = out.filter((t) => t.title.toLowerCase().includes(q.search!.toLowerCase()));
+    if (q.search) out = out.filter((t) => ticketMatches(t, q.search!));
     out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return { tickets: out.slice(0, q.limit) };
   }
