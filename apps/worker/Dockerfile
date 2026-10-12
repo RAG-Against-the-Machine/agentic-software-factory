@@ -26,7 +26,11 @@ ARG CLAUDE_CODE_VERSION=2.1.284
 # every worker; the worker offers whichever one has working credentials.
 ARG CODEX_VERSION=0.159.0
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates openssh-client tini && rm -rf /var/lib/apt/lists/* \
- && npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION}
+ && npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @openai/codex@${CODEX_VERSION} \
+ && corepack enable pnpm yarn
+# pnpm and yarn for the agents: a target repo's own install/test/lint commands (the
+# version comes from the repo's `packageManager` field, fetched on first use).
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 WORKDIR /app
 COPY --from=build /out/dist ./apps/worker/dist
 COPY --from=build /out/node_modules ./apps/worker/node_modules

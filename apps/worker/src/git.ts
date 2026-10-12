@@ -20,13 +20,29 @@ export interface Workspace {
   unborn: boolean;
 }
 
+/**
+ * The worker's own git commands (commit, merge, rebase, push) never run the target
+ * repo's client-side hooks. Hooks such as husky + lint-staged assume a developer
+ * machine with the repo's package manager and installed dependencies; in the worker
+ * they fail with "pnpm: not found" and block the merge request. The MR's CI pipeline is
+ * the quality gate. core.hooksPath is overridden through the environment (it beats the
+ * `core.hooksPath=.husky` husky writes into the repo's config), and HUSKY=0 covers
+ * husky versions that check it.
+ */
+export const NO_REPO_HOOKS: Readonly<Record<string, string>> = {
+  GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: '/dev/null', HUSKY: '0',
+};
+
 async function git(cwd: string, args: string[], env: Record<string, string> = {}): Promise<string> {
   try {
-    const { stdout } = await exec('git', args, { cwd, env: { ...process.env, ...env }, maxBuffer: 32 * 1024 * 1024 });
+    const { stdout } = await exec('git', args, { cwd, env: { ...process.env, ...NO_REPO_HOOKS, ...env }, maxBuffer: 32 * 1024 * 1024 });
     return stdout;
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
-    throw new GitError(`git ${args[0]} failed: ${(e.stderr || e.message || '').trim()}`);
+    // Name the subcommand, not a leading `-c key=value` option.
+    let i = 0;
+    while (args[i] === '-c' || args[i] === '-C') i += 2;
+    throw new GitError(`git ${args[i] ?? args[0]} failed: ${(e.stderr || e.message || '').trim()}`);
   }
 }
 
