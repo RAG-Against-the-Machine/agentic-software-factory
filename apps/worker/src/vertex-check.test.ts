@@ -112,6 +112,29 @@ test('authorized_user: token endpoint 400 invalid_grant -> login_expired; no mod
   assert.equal(body.get('client_secret'), 'csecret');
 });
 
+test('mintToken: invalid_grant is login_expired; invalid_rapt (error or error_subtype) is login_expired', async () => {
+  const code = async (body: unknown, status = 400) => (await mintToken(harness({ adc: userAdc, token: () => json(status, body) }).deps));
+  const grant = await code({ error: 'invalid_grant' });
+  assert.equal(grant.ok, false); assert.equal((grant as { code: string }).code, 'login_expired');
+  const rapt = await code({ error: 'invalid_rapt' });
+  assert.equal((rapt as { code: string }).code, 'login_expired');
+  const subtype = await code({ error: 'invalid_grant', error_subtype: 'invalid_rapt', error_description: 'reauth related error' });
+  assert.equal((subtype as { code: string }).code, 'login_expired');
+  const subtypeOnly = await code({ error: 'access_denied', error_subtype: 'invalid_rapt' });
+  assert.equal((subtypeOnly as { code: string }).code, 'login_expired', 'error_subtype alone is enough');
+});
+
+test('mintToken: unauthorized_client whose description merely says "expired" is NOT login_expired (only Google\'s own grant errors are)', async () => {
+  const r = await mintToken(harness({ adc: userAdc, token: () => json(400, { error: 'unauthorized_client', error_description: 'The OAuth client was expired or deleted.' }) }).deps);
+  assert.equal(r.ok, false);
+  assert.equal((r as { code: string }).code, 'other');
+  assert.match((r as { reason: string }).reason, /unauthorized_client/);
+  for (const description of ['Token has been revoked', 'reauth required', 'rapt_required']) {
+    const x = await mintToken(harness({ adc: userAdc, token: () => json(400, { error: 'invalid_client', error_description: description }) }).deps);
+    assert.equal((x as { code: string }).code, 'other', description);
+  }
+});
+
 test('token endpoint refusing for another reason is login code other, with the status', async () => {
   const r = await runVertexCheck(req(['claude-sonnet-5']), harness({ adc: userAdc, token: () => json(401, { error: 'invalid_client', error_description: 'Unauthorized' }) }).deps);
   assert.equal(r.login.code, 'other');

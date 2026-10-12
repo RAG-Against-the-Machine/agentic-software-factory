@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   VERTEX_CANDIDATES, isGcpProjectId, isVertexRegion, vertexTier, vertexWireId, vertexModelUrl,
   vertexCheckModel, vertexCatalogueExtra, vertexWrites,
+  isGoogleLoginFailure, googleLoginFix, googleLoginHealthKey,
 } from './vertex.js';
 
 test('isGcpProjectId: lowercase id of 6–30 chars; display names, uppercase, spaces, short ids are not ids', () => {
@@ -110,4 +111,43 @@ test('vertexWrites: auth mode, project, region, allowlist and catalogue in order
 test('vertexWrites: a blank region means global', () => {
   const w = vertexWrites({ projectId: 'my-proj', region: '   ', selected: ['claude-sonnet-5'], existingExtra: null });
   assert.equal(w.find(([k]) => k === 'CLOUD_ML_REGION')![1], 'global');
+});
+
+test('isGoogleLoginFailure: recognises the auth library\'s "login is gone" errors', () => {
+  for (const t of [
+    'invalid_grant', 'invalid_rapt', 'Reauthentication failed', 'Could not load the default credentials',
+    'Request had invalid authentication credentials', 'Token has been expired or revoked',
+    'API Error: 400 {"error":"invalid_grant","error_description":"Bad Request"}',
+    'google.auth.exceptions.RefreshError: reauthentication is required',
+    '{"error":{"code":401,"status": "UNAUTHENTICATED"}}',
+    'INVALID_GRANT', // case-insensitive
+  ]) assert.equal(isGoogleLoginFailure(t), true, t);
+});
+
+test('isGoogleLoginFailure: absent text and unrelated failures are not a login problem', () => {
+  for (const t of [null, undefined, '', 'rate limit 429', 'model not found', 'hit the 40-turn ceiling while still working', 'HTTP 403 permission denied on project',
+    // A role that merely talks about these words is not a login failure (review M9 #2).
+    'I added a README step: run gcloud auth application-default login first',
+    'test_returns_UNAUTHENTICATED failed', 'OAuth handler throws invalid_grantee on bad code']) {
+    assert.equal(isGoogleLoginFailure(t), false, String(t));
+  }
+});
+
+test('googleLoginFix: names the worker and the gcloud command', () => {
+  const fix = googleLoginFix('worker-mac-1');
+  assert.match(fix, /worker-mac-1/);
+  assert.match(fix, /gcloud auth application-default login/);
+  assert.notEqual(googleLoginFix('a'), googleLoginFix('b'));
+});
+
+test('googleLoginFix: a service-account key is replaced, not signed into', () => {
+  const fix = googleLoginFix('w1', 'service_account');
+  assert.match(fix, /GOOGLE_APPLICATION_CREDENTIALS/);
+  assert.doesNotMatch(fix, /application-default login/);
+});
+
+test('googleLoginHealthKey: one key per worker, stable', () => {
+  assert.equal(googleLoginHealthKey('w1'), 'google-login:w1');
+  assert.notEqual(googleLoginHealthKey('w1'), googleLoginHealthKey('w2'));
+  assert.equal(googleLoginHealthKey('w1'), googleLoginHealthKey('w1'));
 });

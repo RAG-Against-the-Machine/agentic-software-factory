@@ -19,7 +19,7 @@ function toWire(r: Record<string, unknown>): CredentialHealthWire {
   };
 }
 
-export async function recordCredentialHealth(sql: Sql, h: { key: string; ok: boolean; reason: string | null; label: string; link: string }): Promise<CredentialHealthWire> {
+export async function recordCredentialHealth(sql: Sql, h: { key: string; ok: boolean; reason: string | null; label: string; link: string; fix?: string }): Promise<CredentialHealthWire> {
   if (h.ok) {
     const [row] = await sql`INSERT INTO credential_health (key, ok, reason, failing_since, alerted_at, checked_at)
       VALUES (${h.key}, true, null, null, null, now())
@@ -38,8 +38,9 @@ export async function recordCredentialHealth(sql: Sql, h: { key: string; ok: boo
       await recordNotification(tx, {
         runId: null, kind: 'credential',
         title: `Your ${h.label} stopped working`,
-        body: `${h.reason ?? 'The connection test failed.'} Runs that need it will fail until you save a new one in Settings.`,
-        actions: [{ label: 'Fix in Settings', url: h.link }],
+        // `fix` = what to do when it isn't "save a new one in Settings" (M9 #2: a worker's Google login).
+        body: `${h.reason ?? 'The connection test failed.'} ${h.fix ?? 'Runs that need it will fail until you save a new one in Settings.'}`,
+        actions: [{ label: h.fix ? 'See what’s wrong' : 'Fix in Settings', url: h.link }],
       });
     }
     const [row] = await tx`SELECT * FROM credential_health WHERE key = ${h.key}`;

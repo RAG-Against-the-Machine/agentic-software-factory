@@ -14,10 +14,11 @@ import { preflightAgentAuth } from './auth-preflight.js';
 import { providerFor } from './auth/index.js';
 import { api } from './api.js';
 import { loadRuntime } from './runtimes/index.js';
-import { runSegment } from './segment.js';
+import { runSegment, googleLogin } from './segment.js';
 import { runPublish } from './publish.js';
 import { RuntimeOffer, containerRefusal } from './offer.js';
-import { runVertexCheck } from './vertex-check.js';
+import { mintToken, runVertexCheck } from './vertex-check.js';
+import { LoginWatch } from './login-watch.js';
 
 function log(msg: string, extra: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ t: new Date().toISOString(), worker: config.id, msg, ...extra }));
@@ -25,6 +26,9 @@ function log(msg: string, extra: Record<string, unknown> = {}): void {
 
 let running = 0;
 let stopping = false;
+/** Tasks this worker is executing: a re-register lists them so the registry doesn't stale them. */
+const inFlightIds = new Set<string>();
+const inFlight = (): string[] => [...inFlightIds];
 
 async function executeClaim(claim: NonNullable<Awaited<ReturnType<typeof api.claim>>>): Promise<void> {
   const { run, task } = claim;
@@ -53,9 +57,9 @@ async function pollOnce(runtimes: string[]): Promise<boolean> {
   if (stopping || running >= config.maxConcurrent || !runtimes.length) return false;
   const claim = await api.claim(runtimes).catch((e) => { log(`claim failed: ${e}`); return null; });
   if (!claim) return false;
-  running++;
+  running++; inFlightIds.add(claim.task.id);
   log('claimed', { runId: claim.run.id, role: claim.task.role, seq: claim.task.seq });
-  void executeClaim(claim).finally(() => { running--; });
+  void executeClaim(claim).finally(() => { running--; inFlightIds.delete(claim.task.id); });
   return true;
 }
 
@@ -116,12 +120,25 @@ async function main(): Promise<void> {
   // Container platforms need something listening; /health also answers "is this worker alive and what is it?"
   if (config.healthPort) {
     createServer((req, res) => {
-      if (req.url === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, id: config.id, runtime: offer.kinds[0], runtimes: offer.kinds, pendingRuntimes: offer.pending, authMode: registeredAuthMode, running, maxConcurrent: config.maxConcurrent })); }
+      if (req.url === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, id: config.id, runtime: offer.kinds[0], runtimes: offer.kinds, pendingRuntimes: offer.pending, authMode: registeredAuthMode, running, maxConcurrent: config.maxConcurrent, ...(loginWatch?.reason ? { googleLogin: loginWatch.reason } : {}) })); }
       else { res.writeHead(404); res.end(); }
     }).listen(config.healthPort, '0.0.0.0', () => log('health listener', { port: config.healthPort }));
   }
 
+  // False after the registry says it doesn't know this worker (heartbeat 404: swept
+  // after a pause, or a restarted registry): the next reconcile registers again.
   let registered = true;
+  const loginWatch = new LoginWatch({
+    check: async () => {
+      const r = await mintToken();
+      return r.ok ? { ok: true, ...(r.account ? { account: r.account } : {}) } : { ok: false, code: r.code, reason: r.reason, ...(r.kind ? { kind: r.kind } : {}) };
+    },
+    suspend: (reason) => { offer.suspend('anthropic', reason); },
+    resume: () => { offer.resume('anthropic'); },
+    record: (h) => api.recordLoginHealth(h),
+    log, worker: config.id, intervalMs: config.googleLoginRecheckMs,
+  });
+  googleLogin.confirm = () => loginWatch.confirm();
   const { staled } = await api.register({ runtimes: offer.kinds, maxConcurrent: config.maxConcurrent, inFlightTaskIds: [], authMode: registeredAuthMode, preflight: offer.status });
   if (staled.length) log('staled runs this worker previously held', { staled });
 
@@ -129,8 +146,8 @@ async function main(): Promise<void> {
   // credential test happens on the next spawn (which receives the resolved key via
   // the run context), so the health check here is cheap and never carries the key.
   async function reconcileAuthMode(): Promise<void> {
-    const now = await api.agentAuth();
-    if (now) eff = now;
+    const fresh = await api.agentAuth();
+    if (fresh) eff = fresh;
     const cur = effFor(eff, provider);
     const modeChanged = !!cur && cur.mode !== registeredAuthMode;
     if (modeChanged) {
@@ -140,22 +157,29 @@ async function main(): Promise<void> {
         : `warning: ${provider} ${cur.mode} mode selected but its credential is not set; runs will fail until one is entered in Settings → Which AI should do the work?`);
     }
     const before = offer.kinds.join(',');
-    const changed = await offer.refresh((p) => effFor(eff, p), fallbackMode);
-    if (!offer.kinds.length) {
-      // The new setup failed its check for every runtime: stop taking work until it passes.
-      if (registered) { log('no runtime passes its auth check any more; deregistering until one does'); await api.deregister(); registered = false; }
-      return;
-    }
+    // Google login (M9 #2) first: a login that came back is re-preflighted in the refresh below.
+    // null = the api is unreachable: the mode is unknown, so an expiry is kept as is.
+    const loginChanged = await loginWatch.tick(fresh ? (effFor(eff, 'anthropic')?.mode ?? null) : null);
+    const changed = (await offer.refresh((p) => effFor(eff, p), fallbackMode)) || loginChanged;
+    // Nothing passes its check any more (a new setup that fails, an expired login):
+    // take no tasks (pollOnce gets no runtimes) but stay registered, under the runtimes
+    // it is configured for, and keep heartbeating, so the setup checklist shows why
+    // (each runtime's status says ok:false and the reason).
+    const idle = !offer.kinds.length;
+    if (idle && changed) log('no runtime passes its auth check; taking no tasks until one does', { status: offer.status.map((s) => ({ kind: s.kind, ok: s.ok, reason: s.reason })) });
     if (!modeChanged && !changed && registered) return;
-    if (changed) log('offered runtimes changed; re-registering', { from: before, runtimes: offer.kinds });
+    if (changed && !idle) log('offered runtimes changed; re-registering', { from: before, runtimes: offer.kinds });
+    if (!registered) log('the registry no longer knows this worker; registering again');
     const authMode = modeChanged ? cur.mode : registeredAuthMode;
-    await api.register({ runtimes: offer.kinds, maxConcurrent: config.maxConcurrent, inFlightTaskIds: [], authMode, preflight: offer.status })
+    await api.register({ runtimes: idle ? probed.map((p) => p.runtime.kind) : offer.kinds, maxConcurrent: config.maxConcurrent, inFlightTaskIds: inFlight(), authMode, preflight: offer.status })
       .then(() => { registered = true; }).catch((e) => log(`re-register failed: ${e}`));
     registeredAuthMode = authMode;
   }
 
   // These timers are what keep the process alive — deliberately NOT unref'd.
-  const heartbeat = setInterval(() => { void api.heartbeat(offer.status).then(() => reconcileAuthMode()); }, config.heartbeatIntervalMs);
+  const heartbeat = setInterval(() => {
+    void api.heartbeat(offer.status).then((h) => { if (h === 'unknown') registered = false; }, () => {}).then(() => reconcileAuthMode());
+  }, config.heartbeatIntervalMs);
   const poll = setInterval(() => { void (async () => { while (await pollOnce(offer.kinds)) { /* drain capacity */ } })(); }, config.pollIntervalMs);
 
   const shutdown = async () => {

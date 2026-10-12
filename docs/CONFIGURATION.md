@@ -132,6 +132,7 @@ Every decision is a named setting resolved **environment variable > org setting 
 | `CODEX_EXTRA_ARGS` | string | *(blank)* | env | worker | Extra `codex exec` args appended to every Codex spawn (space-separated), after ASF's own flags and before the stdin prompt marker. |
 | `WORKER_ID` | string | *(blank)* | env | worker | Stable worker id. Blank = worker-<host>-<pid>. |
 | `WORKER_MAX_CONCURRENT` | number | `2` | env | worker | This worker’s contribution to fleet capacity. |
+| `AGENT_AUTH_RECHECK_MS` | number | `300000` | env | worker | Claude on Google Cloud: how often a worker re-checks its Google login (free; no model call). An expired login stops the worker taking Claude tasks and sends one notification; it resumes on its own once the login works again. Not used for Bedrock or other modes. |
 | `WORKER_POLL_INTERVAL_MS` | number | `3000` | env | worker | Claim poll interval. |
 | `WORKER_HEARTBEAT_INTERVAL_MS` | number | `30000` | env | worker | Heartbeat interval; must be well under WORKER_TTL_SECONDS. |
 | `SEGMENT_TIMEOUT_MS` | number | `2700000` | env, org | worker | A role still running after this is stuck, not thorough: SIGTERM then SIGKILL. |

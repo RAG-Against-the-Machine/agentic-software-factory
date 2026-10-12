@@ -90,7 +90,9 @@ export const rpcRequestSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('listOrgSecretNames') }),
   // Credential health (#139): the api records each live check; the first failure of a streak records one notification.
   z.object({ op: z.literal('recordCredentialHealth'), key: z.string().min(1), ok: z.boolean(), reason: z.string().nullable().default(null),
-    label: z.string().min(1), link: z.string().default('/settings') }),
+    label: z.string().min(1), link: z.string().default('/settings'),
+    /** What to do about it, when not "save a new one in Settings" (M9 #2: a worker's Google login). */
+    fix: z.string().optional() }),
   z.object({ op: z.literal('listFleet') }),
   z.object({ op: z.literal('monthCost') }),
   z.object({ op: z.literal('monthUnpricedRuns') }),

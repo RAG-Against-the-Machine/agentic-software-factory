@@ -125,3 +125,171 @@ test('container rule (#70): a runtime that cannot confine its own writes is refu
     assert.equal(containerRefusal(r.capabilities, false), null, `${r.kind} on a host`);
   }
 });
+
+test('M9 suspend: drops an offered runtime, a timed re-check does NOT re-preflight it, status shows the reason', async () => {
+  const h = harness({ anthropic: { mode: 'vertex', credentialPresent: true, vertex: { projectId: 'acme-ai', region: 'global' } }, openai: null });
+  h.passes.add('claude-code');
+  await h.refresh();
+  assert.deepEqual(h.offer.kinds, ['claude-code']);
+  h.calls.length = 0;
+
+  assert.equal(h.offer.suspend('anthropic', 'Google login expired'), true, 'the offered set changed');
+  assert.deepEqual(h.offer.kinds, []);
+  assert.ok(h.offer.pending.includes('claude-code'));
+  const held = h.offer.status.find((s) => s.kind === 'claude-code')!;
+  assert.equal(held.ok, false);
+  assert.equal(held.reason, 'Google login expired');
+
+  // Well past recheckMs, and the login "would pass" now: still no preflight while held.
+  h.tick(10 * 600_000);
+  assert.equal(await h.refresh(), false);
+  assert.deepEqual(h.calls.filter((c) => c.startsWith('claude-code')), []);
+  assert.deepEqual(h.offer.kinds, []);
+  assert.equal(h.offer.status.find((s) => s.kind === 'claude-code')!.reason, 'Google login expired');
+
+  // A provider view change does not bypass the hold either.
+  h.views.anthropic = { mode: 'vertex', credentialPresent: true, vertex: { projectId: 'other-proj', region: 'global' } };
+  await h.refresh();
+  assert.deepEqual(h.calls.filter((c) => c.startsWith('claude-code')), []);
+});
+
+test('M9 suspend: suspending an already-held runtime again reports no change and refreshes the reason', async () => {
+  const h = harness({ anthropic: { mode: 'vertex', credentialPresent: true, vertex: { projectId: 'acme-ai', region: 'global' } } });
+  h.passes.add('claude-code');
+  await h.refresh();
+  assert.equal(h.offer.suspend('anthropic', 'first'), true);
+  assert.equal(h.offer.suspend('anthropic', 'second'), false);
+  assert.equal(h.offer.status.find((s) => s.kind === 'claude-code')!.reason, 'second');
+});
+
+test('M9 resume: the next refresh preflights the held runtime and offers it again on a pass', async () => {
+  const h = harness({ anthropic: { mode: 'vertex', credentialPresent: true, vertex: { projectId: 'acme-ai', region: 'global' } } });
+  h.passes.add('claude-code');
+  await h.refresh();
+  h.offer.suspend('anthropic', 'Google login expired');
+  h.calls.length = 0;
+
+  h.offer.resume('anthropic');
+  assert.deepEqual(h.offer.kinds, [], 'resume alone does not offer it; a real preflight decides');
+  assert.equal(await h.refresh(), true);
+  assert.equal(h.calls.filter((c) => c.startsWith('claude-code')).length, 1, 'preflighted exactly once, immediately (not after recheckMs)');
+  assert.deepEqual(h.offer.kinds, ['claude-code']);
+  const st = h.offer.status.find((s) => s.kind === 'claude-code')!;
+  assert.equal(st.ok, true);
+  assert.equal(st.reason, undefined);
+});
+
+test('M9 resume: a failing preflight after resume keeps it out, with the preflight\'s own reason', async () => {
+  const h = harness({ anthropic: { mode: 'vertex', credentialPresent: true, vertex: { projectId: 'acme-ai', region: 'global' } } });
+  h.passes.add('claude-code');
+  await h.refresh();
+  h.offer.suspend('anthropic', 'Google login expired');
+  h.passes.delete('claude-code');
+  h.offer.resume('anthropic');
+  await h.refresh();
+  assert.deepEqual(h.offer.kinds, []);
+  assert.equal(h.offer.status.find((s) => s.kind === 'claude-code')!.reason, 'no key');
+});
+
+test('M9 resume: resuming a provider that was never suspended is a no-op (no extra preflight)', async () => {
+  const h = harness({ anthropic: { mode: 'api-key', credentialPresent: true } });
+  h.passes.add('claude-code');
+  await h.refresh();
+  h.calls.length = 0;
+  h.offer.resume('anthropic');
+  assert.equal(await h.refresh(), false);
+  assert.deepEqual(h.calls, []);
+});
+
+test('M9 suspend of a different provider leaves a runtime alone', async () => {
+  const h = harness({ anthropic: { mode: 'api-key', credentialPresent: true }, openai: { mode: 'api-key', credentialPresent: true } });
+  h.passes.add('claude-code'); h.passes.add('codex');
+  await h.refresh();
+  assert.deepEqual(h.offer.kinds, ['claude-code', 'codex']);
+  h.calls.length = 0;
+  assert.equal(h.offer.suspend('openai', 'held'), true);
+  assert.deepEqual(h.offer.kinds, ['claude-code']);
+  assert.equal(h.offer.status.find((s) => s.kind === 'claude-code')!.ok, true);
+  assert.equal(h.offer.status.find((s) => s.kind === 'claude-code')!.reason, undefined);
+  h.tick(10 * 600_000);
+  await h.refresh();
+  assert.ok(!h.calls.some((c) => c.startsWith('codex')), 'codex is held');
+  assert.deepEqual(h.offer.kinds, ['claude-code']);
+  // Resuming the other provider does not touch it.
+  h.offer.resume('anthropic');
+  await h.refresh();
+  assert.ok(!h.calls.some((c) => c.startsWith('codex')));
+});
+
+/** A harness whose preflight for claude-code can be held open until released, to land a suspend() mid-await. */
+function gatedHarness(view: ProviderAuthView) {
+  const views: Record<string, ProviderAuthView | null> = { anthropic: view, openai: null };
+  let t = 0;
+  let gate: Promise<void> | null = null;
+  let result: { ok: boolean; reason?: string } = { ok: true };
+  let entered!: () => void;
+  let enteredP: Promise<void> = new Promise((r) => { entered = r; });
+  const offer = new RuntimeOffer(
+    [{ runtime: rt('claude-code'), provider: 'anthropic' }],
+    async () => { entered(); if (gate) await gate; return result; },
+    () => {}, 600_000, () => t,
+  );
+  const refresh = () => offer.refresh((p: ProviderKind) => views[p] ?? null, () => 'unset');
+  return {
+    offer, views, refresh, tick: (ms: number) => { t += ms; },
+    /** Hold the next preflight; returns release(). `inPreflight()` resolves once a preflight is awaiting. */
+    hold: () => { let release!: () => void; gate = new Promise<void>((r) => { release = r; }); enteredP = new Promise((r) => { entered = r; }); return release; },
+    inPreflight: () => enteredP,
+    setResult: (r: { ok: boolean; reason?: string }) => { result = r; },
+  };
+}
+const vertexView = (projectId: string): ProviderAuthView => ({ mode: 'vertex', credentialPresent: true, vertex: { projectId, region: 'global' } });
+
+test('M9 race: a suspend() landing while the first preflight is awaited leaves the runtime NOT offered after it resolves ok', async () => {
+  const h = gatedHarness(vertexView('acme-ai'));
+  const release = h.hold();
+  const refreshing = h.refresh();
+  await h.inPreflight();
+  assert.equal(h.offer.suspend('anthropic', 'Google login expired'), false, 'nothing was offered yet');
+  release();
+  await refreshing;
+  assert.deepEqual(h.offer.kinds, [], 'the login watch wins over the late ok');
+  assert.ok(h.offer.pending.includes('claude-code'));
+  const st = h.offer.status.find((s) => s.kind === 'claude-code')!;
+  assert.equal(st.ok, false);
+  assert.equal(st.reason, 'Google login expired');
+});
+
+test('M9 race: a suspend() landing while a view-change re-preflight of an OFFERED runtime is awaited leaves it NOT offered', async () => {
+  const h = gatedHarness(vertexView('acme-ai'));
+  await h.refresh();
+  assert.deepEqual(h.offer.kinds, ['claude-code']);
+
+  h.views.anthropic = vertexView('other-proj'); // the view changes -> the offered branch re-preflights
+  const release = h.hold();
+  const refreshing = h.refresh();
+  await h.inPreflight();
+  assert.equal(h.offer.suspend('anthropic', 'Google login expired'), true, 'it was offered, so the set changed');
+  release();
+  await refreshing;
+  assert.deepEqual(h.offer.kinds, [], 'a late ok must not re-offer it');
+  assert.equal(h.offer.status.find((s) => s.kind === 'claude-code')!.reason, 'Google login expired');
+  h.tick(10 * 600_000);
+  await h.refresh();
+  assert.deepEqual(h.offer.kinds, [], 'and it stays held');
+});
+
+test('M9 race: a suspend() during a view-change re-preflight that then FAILS keeps the login reason', async () => {
+  const h = gatedHarness(vertexView('acme-ai'));
+  await h.refresh();
+  h.views.anthropic = vertexView('other-proj');
+  h.setResult({ ok: false, reason: 'preflight failed' });
+  const release = h.hold();
+  const refreshing = h.refresh();
+  await h.inPreflight();
+  h.offer.suspend('anthropic', 'Google login expired');
+  release();
+  await refreshing;
+  assert.deepEqual(h.offer.kinds, []);
+  assert.equal(h.offer.status.find((s) => s.kind === 'claude-code')!.reason, 'Google login expired');
+});

@@ -125,11 +125,17 @@ export function registerSetupRoutes(app: FastifyInstance, deps: { tickets: Ticke
     // 4 — a worker online that offers the team's AI. Claude workers are matched on
     // their registered auth mode (as before); for OpenAI, on offering the codex runtime,
     // which a worker does only once its OpenAI preflight passed (#163).
+    // A worker still registered but whose Claude check now fails (M9 #2: its Google login
+    // expired) takes no tasks: it is not "ready", and its own reason says why.
+    const statusDown = (w: (typeof fleet.workers)[number], kind: string) => (w.preflight ?? []).find((s) => s.kind === kind && !s.ok);
+    const claudeDown = (w: (typeof fleet.workers)[number]) => statusDown(w, 'claude-code');
     const matching = teamAi === 'openai'
-      ? fleet.workers.find((w) => (w.runtimes ?? []).includes('codex'))
-      : fleet.workers.find((w) => w.authMode === auth.mode);
+      ? fleet.workers.find((w) => (w.runtimes ?? []).includes('codex') && !statusDown(w, 'codex'))
+      : fleet.workers.find((w) => w.authMode === auth.mode && !claudeDown(w));
+    const down = teamAi === 'openai' ? undefined : fleet.workers.find((w) => w.authMode === auth.mode && claudeDown(w));
     let workerReason: string;
     if (matching) workerReason = `Worker online (${matching.id}), ready to run ${aiName}.`;
+    else if (down) workerReason = `Worker ${down.id} is connected but can't run ${aiName} right now: ${claudeDown(down)!.reason ?? 'its check failed'}`;
     else if (fleet.workers.length > 0) {
       workerReason = teamAi === 'openai'
         ? `A worker is connected but can't use OpenAI yet (it offers ${[...new Set(fleet.workers.flatMap((w) => w.runtimes ?? []))].join(', ') || 'nothing'}). Use “Save and check it works” in Settings → Which AI should do the work? to see why; once the key works, the worker picks it up within a minute.`
