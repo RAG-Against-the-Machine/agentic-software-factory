@@ -11,6 +11,13 @@ export interface AuthTranslator {
   /** Every env var through which the worker's own environment could leak a
    * credential for THIS provider. All are removed before the mode's one is set. */
   readonly credentialEnv: readonly string[];
+  /**
+   * Env that switches WHERE the agent sends requests (Claude Code's
+   * CLAUDE_CODE_USE_VERTEX / _BEDROCK). Stripped from the inherited env before the
+   * mode's own env is added, so a host shell carrying a company Vertex profile can't
+   * re-route an api-key / subscription fleet; the declared mode wins.
+   */
+  readonly routingEnv?: readonly string[];
   /** Non-secret env the mode needs (vertex flag, base URL, ...). */
   modeEnv(auth: RunAuth): Record<string, string>;
   /** The env var the mode's credential is set into, or null if the mode carries none. */

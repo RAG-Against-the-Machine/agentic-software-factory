@@ -16,6 +16,7 @@ import type { AuthTranslator } from './types.js';
 export const anthropic: AuthTranslator = {
   kind: 'anthropic',
   credentialEnv: ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN'],
+  routingEnv: ['CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_BEDROCK'],
   modeEnv(auth: RunAuth): Record<string, string> {
     switch (auth.mode) {
       case 'vertex': return vertexEnv(auth);

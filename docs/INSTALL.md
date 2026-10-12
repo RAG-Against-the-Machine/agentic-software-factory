@@ -20,6 +20,8 @@ for the GCP runbook see [`HOSTING.md`](HOSTING.md).
   plugin (`docker compose`, not `docker-compose`) and ~10 GB free for images and
   worktrees.
 - **git**.
+- Starting from a brand-new Mac (no Homebrew, Docker or git yet)? [`VERTEX.md` step 1](VERTEX.md#1-install-the-tools-once-per-mac)
+  lists the exact install commands; skip the Google Cloud CLI if you won't use Vertex.
 - macOS only: keep the checkout out of privacy-protected folders (`~/Documents`,
   `~/Desktop`, `~/Downloads`) — Docker can be denied file access there. `~/asf` or
   `~/src/` is fine. (The stack uses named volumes, so this only affects the checkout.)
@@ -87,8 +89,12 @@ question per screen, plain language, no setting names):
      ```bash
      claude setup-token
      ```
-   - **Vertex AI / Bedrock**: set in `.env` only. See [`VERTEX.md`](VERTEX.md).
-     (Pairs with mode 2, because ADC lives on the host.)
+   - **Claude on Google Cloud** (Vertex AI): your company's Google Cloud project, billed
+     to Google Cloud. Sign in once on the host with `gcloud auth application-default login`,
+     type the project id, and press **Check which Claude models work**; a worker tries each
+     model and you keep the ones that answer. Works in mode 1. Fresh-Mac walkthrough:
+     [`VERTEX.md`](VERTEX.md).
+   - **Bedrock**: set in `.env` only.
 3. **When should it check with you?** Three presets, or step by step. See [`PIPELINE.md`](PIPELINE.md).
 4. **How much can it spend?** A per-ticket and monthly limit.
 
@@ -125,8 +131,8 @@ More in [`UPGRADING.md`](UPGRADING.md) (updates, backups, restore) and
 
 | Mode | What runs where | Pick it when |
 |---|---|---|
-| **1 — containers** | Everything (Postgres, registry, api, worker) in Docker. | The default. You want the whole factory in containers and agent auth via the UI (subscription token or API key). |
-| **2 — host-worker** | Postgres/registry/api in containers; the **worker on this machine**, supervised across reboots (launchd / systemd `--user`). | The agent needs a credential that only exists on the host: an interactive `claude login`, or **Google ADC for Vertex** ([`VERTEX.md`](VERTEX.md)). |
+| **1 — containers** | Everything (Postgres, registry, api, worker) in Docker. | The default. You want the whole factory in containers and agent auth via the UI (API key, subscription token, or Claude on Google Cloud: the host's `~/.config/gcloud` is mounted read-only into the worker). |
+| **2 — host-worker** | Postgres/registry/api in containers; the **worker on this machine**, supervised across reboots (launchd / systemd `--user`). | The agent needs something only the host has: an interactive `claude login`, the host's own tools, or company-managed Claude Code settings ([`VERTEX.md`](VERTEX.md#company-managed-claude-code-settings)). |
 | **3 — dev** | Postgres in Docker; the apps on the host via `pnpm dev`. | You're developing ASF itself. Needs Node ≥ 22 + pnpm. |
 
 ## Reach it from other devices — Tailscale
@@ -171,6 +177,6 @@ fully clean up the host worker.
 | Port already in use | Another process (or an existing ASF) holds `ASF_PORT` | Pick another port when prompted, or set `ASF_PORT` in `.env` and `asf restart`. |
 | UI loads but a run stays `queued` | No worker registered | `asf logs worker` — usually agent auth isn't set (paste a credential in **Settings → Which AI should do the work?**) or the host slept. |
 | "No worker connected" / auth-mode mismatch | Worker up but authenticating as a different mode than the org setting | `asf doctor` shows the modes; align **Settings → Which AI should do the work?** with the worker. |
-| Vertex runs fail after a while | Host ADC expired | Re-run `gcloud auth application-default login` on the host — see [`VERTEX.md`](VERTEX.md). |
+| "Google login on worker … stopped working" | Host ADC expired (Claude on Google Cloud) | Re-run `gcloud auth application-default login` on the host; the worker resumes by itself within ~5 minutes. See [`VERTEX.md`](VERTEX.md#when-the-google-login-expires). |
 | A bad tracker/SCM token fails the api container | Preflight rejects the credential on purpose | Fix the credential in **Settings** and **Save and check it works**; the api restarts clean. |
 | Everything looks wrong and you're not sure where | — | `asf doctor` — a read-only ✓/✗/⚠ table across host, `.env`, containers, providers, fleet, and storage. |

@@ -59,7 +59,7 @@ command (`asf up|down|logs|status|doctor|update|backup|restore|reset`). See
 | Shared machine secret | `RUN_EVENT_SECRET=$(openssl rand -hex 32)` | Required across containers (blank only works for a single process on one host). `setup.sh` generates it. |
 | Postgres password | `POSTGRES_PASSWORD=…` | Compose wires the registry's `DATABASE_URL` from it. `setup.sh` generates it. |
 | Work tracker / source control | `TICKET_PROVIDER`, `SCM_PROVIDER` | Left **blank** by `setup.sh` so the **Settings** UI owns them (chosen live, no restart). Pre-seed from the env instead if you prefer: `TICKET_PROVIDER=github` (+ `GITHUB_TOKEN`, `GITHUB_REPOS`), `jira`, or `trello`. See [`PROVIDERS.md`](PROVIDERS.md). |
-| Agent auth | `AGENT_AUTH_MODE` (+ credential) | Left blank so **Settings → Which AI should do the work?** owns it (subscription token / API key). Export a mode + credential in the launching shell to hard-pin the fleet (env wins over the UI). Vertex: [`VERTEX.md`](VERTEX.md). |
+| Agent auth | `AGENT_AUTH_MODE` (+ credential) | Left blank so **Settings → Which AI should do the work?** owns it (API key, subscription token, or Claude on Google Cloud). Export a mode + credential in the launching shell to hard-pin the fleet (env wins over the UI). Vertex: [`VERTEX.md`](VERTEX.md). |
 | Who is the operator | `AUTH_MODE`, `AUTH_HEADER` | `none` for one person; `header` + `AUTH_HEADER=Tailscale-User-Login` when serving through Tailscale so runs record who dispatched them. |
 | Cost guardrails | `ORG_MAX_COST_USD`, `ORG_MONTHLY_BUDGET_USD` | Also editable later in the UI. |
 
@@ -120,9 +120,10 @@ a credential that only exists on the host:
   credentials into the host's home directory. A container worker can't do that browser
   flow; a host worker inherits the login you already did on this machine — no token to
   paste into Settings.
-- **Google ADC for Vertex.** `gcloud auth application-default login` leaves Application
-  Default Credentials on the host. A host worker uses them directly for
-  `AGENT_AUTH_MODE=vertex`. Vertex setup: [`VERTEX.md`](VERTEX.md).
+- **Company-managed Claude Code settings or host tools.** A host worker runs under the
+  Mac's own Claude Code policy and tools. (Google ADC for Vertex does *not* need this
+  mode: the container worker reads `~/.config/gcloud` through a read-only mount.
+  See [`VERTEX.md`](VERTEX.md).)
 
 Everything else — cost halts, gates, the pipeline — is identical to the all-container
 path.
@@ -148,8 +149,9 @@ Mode 2:
   `~/.asf/logs/worker.log`.
 
 The worker's agent auth is now host-side: run `claude login` (or `claude setup-token`),
-or provide Vertex ADC — you do **not** enter a credential in Settings → Agent
-authentication for this mode. A host `claude login` is your own subscription: keep it to
+or sign in to Google for Vertex (`gcloud auth application-default login`; the project and
+models are still chosen in Settings → Which AI should do the work?). You do **not** paste
+a Claude credential in Settings for this mode. A host `claude login` is your own subscription: keep it to
 your own use, and switch to an API key or Vertex if other people use the factory
 ([`CLAUDE_USAGE.md`](CLAUDE_USAGE.md)).
 

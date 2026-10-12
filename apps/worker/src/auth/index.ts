@@ -35,7 +35,9 @@ const ALSO_SET: Record<string, string[]> = { ...OPENAI_ALSO_SET };
  */
 export function applyAuth(base: NodeJS.ProcessEnv, auth: RunAuth): NodeJS.ProcessEnv {
   const t = TRANSLATORS[auth.providerKind];
-  const env: NodeJS.ProcessEnv = { ...base, ...t.modeEnv(auth) };
+  const env: NodeJS.ProcessEnv = { ...base };
+  for (const k of t.routingEnv ?? []) delete env[k];
+  Object.assign(env, t.modeEnv(auth));
   for (const k of t.credentialEnv) delete env[k];
   const target = t.credentialTarget(auth);
   const cred = auth.credential ?? legacyCredential(auth);

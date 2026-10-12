@@ -202,3 +202,19 @@ test('M9: checkAuthConfig vertex passes with auth.vertex.projectId even when the
   assert.equal(none.ok, false);
   assert.match((none as { reason: string }).reason, /ANTHROPIC_VERTEX_PROJECT_ID/);
 });
+
+test('M9: a host shell carrying a company Vertex/Bedrock profile cannot re-route a non-Vertex fleet', () => {
+  const base = { PATH: '/bin', CLAUDE_CODE_USE_VERTEX: '1', CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_VERTEX_PROJECT_ID: 'corp-proj' };
+  for (const mode of ['api-key', 'oauth-token'] as const) {
+    const env = applyAuth(base, { providerKind: 'anthropic', mode, credential: 'x' } as RunAuth);
+    assert.equal(env.CLAUDE_CODE_USE_VERTEX, undefined, mode);
+    assert.equal(env.CLAUDE_CODE_USE_BEDROCK, undefined, mode);
+  }
+  const v = applyAuth(base, { providerKind: 'anthropic', mode: 'vertex' } as RunAuth);
+  assert.equal(v.CLAUDE_CODE_USE_VERTEX, '1');
+  assert.equal(v.CLAUDE_CODE_USE_BEDROCK, undefined, 'vertex mode does not also route to Bedrock');
+  assert.equal(v.ANTHROPIC_VERTEX_PROJECT_ID, 'corp-proj', 'the worker env project stays the fallback');
+  const b = applyAuth(base, { providerKind: 'anthropic', mode: 'bedrock' } as RunAuth);
+  assert.equal(b.CLAUDE_CODE_USE_BEDROCK, '1');
+  assert.equal(b.CLAUDE_CODE_USE_VERTEX, undefined);
+});
