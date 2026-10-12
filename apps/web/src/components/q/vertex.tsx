@@ -105,7 +105,7 @@ export function VertexSetup({ b, draft, setDraft }: { b: ByKey; draft: VertexDra
         {busy && <span className="spinner" />}
         {busy && <span className="muted small">{state?.state === 'running'
           ? `Checking on worker ${(state as { worker?: string }).worker ?? ''}… (about 30 seconds)`
-          : waited > 15 ? 'Still waiting for a worker to pick this up. Is the factory running? (see Workers)' : 'Waiting for a worker…'}</span>}
+          : waited > 15 ? 'Still waiting for a worker to pick this up. Is the factory running? (scripts/asf status)' : 'Waiting for a worker…'}</span>}
         {state?.state === 'error' && <span className="bad">{DOT.bad} {state.reason}</span>}
       </div>
 
