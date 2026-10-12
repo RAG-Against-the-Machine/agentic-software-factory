@@ -27,7 +27,7 @@ export interface QuestionDef {
 export const QUESTIONS: readonly QuestionDef[] = [
   { id: 'tickets', tier: 'essentials', keys: ['TICKET_PROVIDER', 'JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_PROJECTS', 'GITHUB_REPOS', 'GITHUB_TOKEN', 'TRELLO_KEY', 'TRELLO_TOKEN', 'TRELLO_BOARDS'] },
   { id: 'code', tier: 'essentials', keys: ['SCM_PROVIDER', 'GITLAB_BASE_URL', 'GITLAB_TOKEN', 'GITLAB_REPOS'] },
-  { id: 'ai', tier: 'essentials', keys: ['AGENT_AUTH_MODE', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'AGENT_AUTH_OPENAI_MODE', 'OPENAI_API_KEY',
+  { id: 'ai', tier: 'essentials', keys: ['AGENT_AUTH_MODE', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_VERTEX_PROJECT_ID', 'CLOUD_ML_REGION', 'AGENT_AUTH_OPENAI_MODE', 'OPENAI_API_KEY',
     'RUNTIME_DEFAULT_PLANNER', 'RUNTIME_DEFAULT_IMPLEMENTER', 'RUNTIME_DEFAULT_TESTER', 'RUNTIME_DEFAULT_REVIEWER'] },
   { id: 'approvals', tier: 'essentials', keys: ['PIPELINE_STAGES'] },
   { id: 'spending', tier: 'essentials', keys: ['ORG_MAX_COST_USD', 'ORG_MONTHLY_BUDGET_USD'] },
@@ -49,7 +49,7 @@ export const UI_ENV_ONLY: Readonly<Record<string, string>> = {
   GITHUB_COPILOT_TOKEN: 'operator: set in .env',
   // Model catalogue as data (M8 WP D). The AI question sets the per-role runtime as a whole team (#162); a per-role picker is #69.
   MODEL_CATALOG_EXTRA: 'advanced model catalogue (JSON, Admin)',
-  MODEL_ALLOWLIST: 'which models the factory may run (Admin); the Vertex AI setup question will set it',
+  MODEL_ALLOWLIST: 'which models the factory may run (Admin); the Claude on Google Cloud answer sets it to the models its check found',
   STALE_AFTER_MIN: 'operator tuning',
   WORKER_TTL_SECONDS: 'operator tuning',
   EVENT_RETENTION_DAYS: 'operator tuning',

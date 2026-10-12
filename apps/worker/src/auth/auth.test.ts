@@ -162,3 +162,43 @@ test('prepareAuthHome: chatgpt mode is idempotent when the link already exists',
     delete process.env.CODEX_HOME;
   }
 });
+
+test('M9: anthropic vertex mode puts the auth\'s project, region and pinned models in the spawn env, over the worker env', () => {
+  const auth: RunAuth = {
+    providerKind: 'anthropic', mode: 'vertex',
+    vertex: { projectId: 'org-proj', region: 'us-east5', defaultModel: 'claude-sonnet-5', fastModel: 'claude-haiku-4-5@20251001', maxModel: 'claude-opus-4-8' },
+  };
+  const workerEnv = {
+    ...strays, PATH: '/usr/bin',
+    ANTHROPIC_VERTEX_PROJECT_ID: 'worker-proj', CLOUD_ML_REGION: 'europe-west1', ANTHROPIC_MODEL: 'stale', ANTHROPIC_DEFAULT_OPUS_MODEL: 'stale',
+  } as NodeJS.ProcessEnv;
+  const env = applyAuth(workerEnv, auth);
+  assert.equal(env.ANTHROPIC_VERTEX_PROJECT_ID, 'org-proj');
+  assert.equal(env.CLOUD_ML_REGION, 'us-east5');
+  assert.equal(env.ANTHROPIC_MODEL, 'claude-sonnet-5');
+  assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'claude-sonnet-5');
+  assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'claude-haiku-4-5@20251001');
+  assert.equal(env.ANTHROPIC_SMALL_FAST_MODEL, 'claude-haiku-4-5@20251001');
+  assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL, 'claude-opus-4-8');
+  assert.equal(env.CLAUDE_CODE_USE_VERTEX, '1');
+  assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
+  assert.equal(env.ANTHROPIC_API_KEY, undefined, 'vertex strips anthropic credentials');
+  assert.equal(env.PATH, '/usr/bin');
+});
+
+test('M9: vertex mode without auth.vertex leaves the worker\'s own env values alone', () => {
+  const env = applyAuth({ ANTHROPIC_VERTEX_PROJECT_ID: 'worker-proj', CLOUD_ML_REGION: 'global' } as NodeJS.ProcessEnv, { providerKind: 'anthropic', mode: 'vertex' });
+  assert.equal(env.ANTHROPIC_VERTEX_PROJECT_ID, 'worker-proj');
+  assert.equal(env.CLOUD_ML_REGION, 'global');
+  assert.equal(env.CLAUDE_CODE_USE_VERTEX, '1');
+  assert.equal(env.ANTHROPIC_MODEL, undefined);
+});
+
+test('M9: checkAuthConfig vertex passes with auth.vertex.projectId even when the worker env is empty', () => {
+  const withProject: RunAuth = { providerKind: 'anthropic', mode: 'vertex', vertex: { projectId: 'org-proj' } };
+  assert.deepEqual(checkAuthConfig(withProject, {}, false), { ok: true, deferred: false });
+  assert.deepEqual(checkAuthConfig({ providerKind: 'anthropic', mode: 'vertex' }, { ANTHROPIC_VERTEX_PROJECT_ID: 'env-proj' }, false), { ok: true, deferred: false });
+  const none = checkAuthConfig({ providerKind: 'anthropic', mode: 'vertex', vertex: {} }, {}, false);
+  assert.equal(none.ok, false);
+  assert.match((none as { reason: string }).reason, /ANTHROPIC_VERTEX_PROJECT_ID/);
+});

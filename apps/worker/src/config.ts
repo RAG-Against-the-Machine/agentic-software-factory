@@ -63,6 +63,8 @@ export const config = {
   authRecheckMs: 10 * 60_000,
   /** While no runtime is offered yet, how often to ask the api whether an AI has been connected. */
   authWaitPollMs: 15_000,
+  /** How often an idle worker asks the api for a queued Vertex check (M9). */
+  vertexCheckPollMs: 3_000,
   segmentTimeoutMs: resolve('SEGMENT_TIMEOUT_MS'),
   maxTurns: resolve('WORKER_MAX_TURNS'),
   dryRun: resolve('WORKER_DRY_RUN'),

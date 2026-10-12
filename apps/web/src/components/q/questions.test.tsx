@@ -10,18 +10,19 @@ const store: SettingsStore = { byKey: {}, loaded: true, err: null, saveMany: asy
 
 // #136: the AI question offers only the three real choices; the disabled
 // "Something else … coming soon" placeholder (Copilot/OpenAI-compat/DeepSeek) is gone.
-test('#136: the AI question has exactly three, none-disabled choices, and mentions no unshipped provider', () => {
+test('#136 + M9: the AI question has exactly four, none-disabled choices, and mentions no unshipped provider', () => {
   const html = renderToStaticMarkup(<aiQ.Body store={store} actions={() => null} />);
   const titles = [...html.matchAll(/class="choice[^"]*"[^>]*><b>([^<]+)/g)].map((m) => m[1]);
-  assert.deepEqual(titles, ['Claude API key', 'Claude subscription', 'ChatGPT / OpenAI']);
+  assert.deepEqual(titles, ['Claude API key', 'Claude subscription', 'Claude on Google Cloud', 'ChatGPT / OpenAI']);
   assert.ok(!/\bdisabled(=|>)/.test(html), 'no choice should render disabled when nothing is env-pinned');
   for (const bad of ['Something else', 'Copilot', 'DeepSeek', 'coming soon']) {
     assert.ok(!html.includes(bad), `unexpected "${bad}" in the AI question`);
   }
 });
 
-test('#136: the tip note still explains Vertex/Bedrock are env-only, unchanged by the cleanup', () => {
-  assert.match(aiQ.tipNote!, /Vertex AI and Bedrock are set up in \.env only/);
+test('M9: the tip note says Vertex uses the host\'s Google login and Bedrock stays env-only', () => {
+  assert.match(aiQ.tipNote!, /gcloud auth application-default login/);
+  assert.match(aiQ.tipNote!, /Bedrock is set up in \.env only/);
 });
 
 const withSettings = (v: Record<string, string>): SettingsStore =>

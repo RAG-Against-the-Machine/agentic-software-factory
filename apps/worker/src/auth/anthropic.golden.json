@@ -60,7 +60,8 @@
     "OPENAI_API_KEY": "STRAY-OPENAI",
     "PATH": "/usr/bin",
     "HOME": "/home/asf",
-    "CLAUDE_CODE_USE_VERTEX": "1"
+    "CLAUDE_CODE_USE_VERTEX": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
    }
   },
   {

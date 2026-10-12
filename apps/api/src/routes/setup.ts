@@ -109,7 +109,9 @@ export function registerSetupRoutes(app: FastifyInstance, deps: { tickets: Ticke
       id: 'agent-auth', title: 'Connect your AI',
       done: aiAuth.credentialPresent,
       reason: aiAuth.credentialPresent
-        ? `Ready (${aiName}, ${aiAuth.mode})`
+        ? `Ready (${aiName}, ${aiAuth.mode === 'vertex' ? `Google Cloud project ${aiAuth.vertex?.projectId ?? ''}` : aiAuth.mode})`
+        : aiAuth.mode === 'vertex' && teamAi !== 'openai'
+          ? 'Claude on Google Cloud is chosen but no project is set. Finish it in Settings → Which AI should do the work?'
         : aiAuth.error
           ? `Your saved ${aiName} credential can't be read: ${aiAuth.error}`
           : `No ${aiName} ${teamAi === 'openai' ? 'API key' : 'credential'} saved yet. Add one in Settings → Which AI should do the work?`,

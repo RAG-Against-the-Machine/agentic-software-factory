@@ -58,6 +58,17 @@ const runAuthObject = z.object({
   mode: z.string().min(1),
   credential: z.string().optional(),
   baseUrl: z.string().optional(),
+  /** anthropic `vertex` mode (M9): the project and region from settings, and the
+   * models Claude Code should fall back to (its default + its small/fast model,
+   * which on Vertex must be ids the project has enabled). The worker's own env
+   * fills any that are absent. */
+  vertex: z.object({
+    projectId: z.string().optional(),
+    region: z.string().optional(),
+    defaultModel: z.string().optional(),
+    fastModel: z.string().optional(),
+    maxModel: z.string().optional(),
+  }).optional(),
   /** @deprecated v1 shim — read `credential`. */
   apiKey: z.string().optional(),
   /** @deprecated v1 shim — read `credential`. */

@@ -9,7 +9,8 @@ import { computeRunAuth, computeRunAuths, describeAgentAuth, PROVIDER_AUTH } fro
 // credential goes on the wire, matching the mode.
 const KEYS = ['AGENT_AUTH_MODE', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'SECRETS_SOURCE',
   'AGENT_AUTH_OPENAI_MODE', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AGENT_AUTH_OPENAI_COMPAT_MODE',
-  'OPENAI_COMPAT_API_KEY', 'OPENAI_COMPAT_BASE_URL', 'AGENT_AUTH_GITHUB_MODE', 'GITHUB_COPILOT_TOKEN'];
+  'OPENAI_COMPAT_API_KEY', 'OPENAI_COMPAT_BASE_URL', 'AGENT_AUTH_GITHUB_MODE', 'GITHUB_COPILOT_TOKEN',
+  'ANTHROPIC_VERTEX_PROJECT_ID', 'CLOUD_ML_REGION', 'MODEL_ALLOWLIST'];
 const realFetch = global.fetch;
 afterEach(() => {
   global.fetch = realFetch;
@@ -44,11 +45,24 @@ test('a blank credential returns the bare mode (no silent fallback to another mo
   assert.deepEqual(await computeRunAuth(), { providerKind: 'anthropic', mode: 'api-key' });
 });
 
-test('vertex/bedrock return only the mode (no credential on the wire)', async () => {
-  for (const mode of ['vertex', 'bedrock']) {
-    env({ AGENT_AUTH_MODE: mode, ANTHROPIC_API_KEY: 'key-B' });
-    assert.deepEqual(await computeRunAuth(), { providerKind: 'anthropic', mode });
-  }
+test('vertex/bedrock carry no credential on the wire; vertex carries its project + region', async () => {
+  env({ AGENT_AUTH_MODE: 'bedrock', ANTHROPIC_API_KEY: 'key-B' });
+  assert.deepEqual(await computeRunAuth(), { providerKind: 'anthropic', mode: 'bedrock' });
+  env({ AGENT_AUTH_MODE: 'vertex', ANTHROPIC_API_KEY: 'key-B', ANTHROPIC_VERTEX_PROJECT_ID: 'acme-ai', CLOUD_ML_REGION: 'us-east5' });
+  assert.deepEqual(await computeRunAuth(), { providerKind: 'anthropic', mode: 'vertex', vertex: { projectId: 'acme-ai', region: 'us-east5' } });
+});
+
+test('vertex under MODEL_ALLOWLIST pins Claude Code\'s own model picks to allowed ids; status says whether a project is set', async () => {
+  env({ AGENT_AUTH_MODE: 'vertex', ANTHROPIC_VERTEX_PROJECT_ID: '', MODEL_ALLOWLIST: 'claude-opus-5-5, claude-sonnet-5, claude-haiku-4-5' });
+  const a = await computeRunAuth();
+  assert.deepEqual(a.vertex, { region: 'global', defaultModel: 'claude-sonnet-5', fastModel: 'claude-haiku-4-5', maxModel: 'claude-opus-5-5' });
+  const s = await describeAgentAuth();
+  assert.equal(s.mode, 'vertex');
+  assert.equal(s.credentialPresent, false, 'no project yet = not ready');
+  env({ AGENT_AUTH_MODE: 'vertex', ANTHROPIC_VERTEX_PROJECT_ID: 'acme-ai', MODEL_ALLOWLIST: '' });
+  const s2 = await describeAgentAuth();
+  assert.equal(s2.credentialPresent, true);
+  assert.deepEqual(s2.vertex, { projectId: 'acme-ai', region: 'global' }, 'no allowlist: Claude Code keeps its own defaults');
 });
 
 test('every credential resolves a secret://org pointer via the registry', async () => {

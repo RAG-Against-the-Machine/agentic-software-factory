@@ -1,11 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
   MODELS, PIPELINE_STAGES, QUESTIONS, detectApprovalPreset, applyApprovalPreset, setFactoryMerges, effectiveStages, detectTeamAi, teamAiWrites,
-  BUDGET_PRESETS, detectBudgetPreset, subscriptionSharingWarning, CLAUDE_TERMS_URL, CLAUDE_USAGE_DOC_URL, type ApprovalPreset, type PipelineStage, type StageConfig,
+  BUDGET_PRESETS, detectBudgetPreset, subscriptionSharingWarning, vertexWrites, vertexTier, CLAUDE_TERMS_URL, CLAUDE_USAGE_DOC_URL, type ApprovalPreset, type PipelineStage, type StageConfig,
 } from '@asf/shared/ui';
 import { api } from '../../api';
 import { setupFlags } from '../../setup-flags';
 import { lookQ } from '../ThemeSettings';
+import { VertexSetup, initialVertexDraft, vertexDraftProblem, type VertexDraft } from './vertex';
 import { Choices, Field, SecretField, CheckButton, Locked, Tip, HealthNote, str, secretIsSet, unanswered, needsFix, type ByKey, type SettingsStore } from './ui';
 
 /**
@@ -263,10 +264,10 @@ export const codeQ: Question = {
 
 // ── 3. AI ────────────────────────────────────────────────────────────────────
 
-const AI_LABEL: Record<string, string> = { 'oauth-token': 'Claude subscription', 'api-key': 'Claude API key', vertex: 'Claude on Google Vertex AI', bedrock: 'Claude on AWS Bedrock', openai: 'ChatGPT / OpenAI API key' };
+const AI_LABEL: Record<string, string> = { 'oauth-token': 'Claude subscription', 'api-key': 'Claude API key', vertex: 'Claude on Google Cloud (Vertex AI)', bedrock: 'Claude on AWS Bedrock', openai: 'ChatGPT / OpenAI API key' };
 
 /** The choice on screen: a Claude auth mode, or 'openai' (the whole team on Codex + GPT). */
-type AiChoice = 'oauth-token' | 'api-key' | 'openai';
+type AiChoice = 'oauth-token' | 'api-key' | 'vertex' | 'openai';
 
 const OPENAI_STEPS: ReactNode[] = [
   <>Go to <a href="https://platform.openai.com/signup" target="_blank" rel="noreferrer">platform.openai.com</a> and sign in, or create a free account. This is separate from a ChatGPT subscription.</>,
@@ -280,13 +281,18 @@ export const aiQ: Question = {
   id: 'ai',
   title: 'Which AI should do the work?',
   why: 'Pick what your company already pays for.',
-  tipNote: 'Vertex AI and Bedrock are set up in .env only (AGENT_AUTH_MODE=vertex|bedrock). A Claude subscription is for one person’s own use (docs/CLAUDE_USAGE.md). Choosing ChatGPT / OpenAI runs every step on Codex with GPT models; you can still pick per ticket when you send it.',
+  tipNote: 'Claude on Google Cloud uses the Google login of the computer running the factory (gcloud auth application-default login); docs/VERTEX.md. Bedrock is set up in .env only (AGENT_AUTH_MODE=bedrock). A Claude subscription is for one person’s own use (docs/CLAUDE_USAGE.md). Choosing ChatGPT / OpenAI runs every step on Codex with GPT models; you can still pick per ticket when you send it.',
   summary: (b) => {
     if (detectTeamAi((k) => b[k]?.value) === 'openai') {
       return <><b>{AI_LABEL.openai}</b>{!secretIsSet(b.OPENAI_API_KEY) && <span className="warn"> · no key saved yet</span>}</>;
     }
     const m = str(b.AGENT_AUTH_MODE);
     const key = m === 'oauth-token' ? b.CLAUDE_CODE_OAUTH_TOKEN : m === 'api-key' ? b.ANTHROPIC_API_KEY : undefined;
+    if (m === 'vertex') {
+      return <><b>{AI_LABEL.vertex}</b>{str(b.ANTHROPIC_VERTEX_PROJECT_ID)
+        ? <> · project {str(b.ANTHROPIC_VERTEX_PROJECT_ID)} ({str(b.CLOUD_ML_REGION) || 'global'})</>
+        : <span className="warn"> · no project set yet</span>}</>;
+    }
     return <><b>{AI_LABEL[m] ?? m}</b>{key && !secretIsSet(key) && <span className="warn"> · no key saved yet</span>}
       {subscriptionSharingWarning(m, str(b.AUTH_MODE)) && <span className="warn"> · shared subscription (see Anthropic’s terms)</span>}
       {m === 'oauth-token' && <HealthNote s={b.CLAUDE_CODE_OAUTH_TOKEN} name="Claude subscription token" />}</>;
@@ -295,6 +301,7 @@ export const aiQ: Question = {
     if (detectTeamAi((k) => b[k]?.value) === 'openai') return !secretIsSet(b.OPENAI_API_KEY);
     const m = str(b.AGENT_AUTH_MODE);
     const key = m === 'oauth-token' ? b.CLAUDE_CODE_OAUTH_TOKEN : m === 'api-key' ? b.ANTHROPIC_API_KEY : undefined;
+    if (m === 'vertex') return !str(b.ANTHROPIC_VERTEX_PROJECT_ID);
     return (!!key && (!secretIsSet(key) || needsFix(key))) || !!subscriptionSharingWarning(m, str(b.AUTH_MODE));
   },
   Body: function AiBody({ store, actions }) {
@@ -303,18 +310,32 @@ export const aiQ: Question = {
     const onOpenai = detectTeamAi(get) === 'openai';
     const models = useCatalogue();
     const current = str(b.AGENT_AUTH_MODE);
-    const envOnly = !onOpenai && (current === 'vertex' || current === 'bedrock');
+    const envOnly = !onOpenai && current === 'bedrock';
     const [choice, setChoice] = useState<AiChoice>(onOpenai ? 'openai' : (current as AiChoice));
     const [secret, setSecret] = useState('');
+    const [vdraft, setVdraft] = useState<VertexDraft>(() => initialVertexDraft(b));
     const { busy, error, run } = useSaver(store);
     const locked = !!b.AGENT_AUTH_MODE?.envPinned || envOnly;
     const save = () => {
+      if (choice === 'vertex') {
+        const savedOk = current === 'vertex' && !onOpenai && vdraft.projectId.trim() === str(b.ANTHROPIC_VERTEX_PROJECT_ID)
+          && (vdraft.region.trim() || 'global') === (str(b.CLOUD_ML_REGION) || 'global') && !!str(b.MODEL_ALLOWLIST);
+        // The roles land on the ticked models: the catalogue they're checked against is exactly those.
+        const narrowed = vdraft.selected.map((id) => models.find((m) => m.id === id) ?? MODELS.find((m) => m.id === id) ?? { id, tier: vertexTier(id), runtimes: ['claude-code'] });
+        return run([...vertexWrites({ projectId: vdraft.projectId, region: vdraft.region, selected: vdraft.selected, existingExtra: b.MODEL_CATALOG_EXTRA?.value }),
+          ...teamAiWrites('claude', get, narrowed)], () => vertexDraftProblem(vdraft, savedOk));
+      }
+      // Leaving Claude on Google Cloud: its model list (Vertex ids) no longer applies, so
+      // clear it and move every role off a Vertex-only id onto a built-in model.
+      const leavingVertex = current === 'vertex' && !onOpenai;
+      const leave: [string, unknown][] = leavingVertex ? [['MODEL_ALLOWLIST', '']] : [];
+      const pool = leavingVertex ? MODELS : models;
       if (choice === 'openai') {
-        return run([...secretEntry('OPENAI_API_KEY', secret), ['AGENT_AUTH_OPENAI_MODE', 'api-key'], ...teamAiWrites('openai', get, models)],
+        return run([...secretEntry('OPENAI_API_KEY', secret), ['AGENT_AUTH_OPENAI_MODE', 'api-key'], ...leave, ...teamAiWrites('openai', get, pool)],
           () => (!secret.trim() && !secretIsSet(b.OPENAI_API_KEY) ? 'Paste your OpenAI API key.' : secret.trim() && !secret.trim().startsWith('sk-') ? 'That doesn’t look like an OpenAI key. It starts with sk-.' : null));
       }
       const credKey = choice === 'oauth-token' ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY';
-      return run([...secretEntry(credKey, secret), ['AGENT_AUTH_MODE', choice], ...teamAiWrites('claude', get, models)],
+      return run([...secretEntry(credKey, secret), ['AGENT_AUTH_MODE', choice], ...leave, ...teamAiWrites('claude', get, pool)],
         () => (!envOnly && !secret.trim() && !secretIsSet(b[credKey]) ? (choice === 'oauth-token' ? 'Paste your subscription token.' : 'Paste your API key.') : null));
     };
     return (
@@ -323,6 +344,7 @@ export const aiQ: Question = {
           <Choices value={choice} onPick={(v) => { setChoice(v); setSecret(''); }} opts={[
             { v: 'api-key', title: 'Claude API key', sub: 'Recommended. Pay only for what you use, with a cost for every job' },
             { v: 'oauth-token', title: 'Claude subscription', sub: 'Your own Pro or Max plan, for your personal use only' },
+            { v: 'vertex', title: 'Claude on Google Cloud', sub: 'Your company’s Vertex AI project, billed to Google Cloud' },
             { v: 'openai', title: 'ChatGPT / OpenAI', sub: 'An OpenAI API key. Pay only for what you use' },
           ]} />
         )}
@@ -350,6 +372,7 @@ export const aiQ: Question = {
             <>Click <b>Create key</b> and paste it here.</>,
           ]} />
         )}
+        {!locked && choice === 'vertex' && <VertexSetup b={b} draft={vdraft} setDraft={setVdraft} />}
         {choice === 'openai' && <>
           <SecretField s={b.OPENAI_API_KEY} label="OpenAI API key" placeholder="Starts with sk-" value={secret} onChange={setSecret} howTo={OPENAI_STEPS} />
           <p className="muted small" style={{ marginTop: 8 }}>

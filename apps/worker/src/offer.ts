@@ -18,7 +18,7 @@
  */
 import type { AgentRuntime, ProviderKind, RunAuth, RuntimeCapabilities, RuntimeStatus } from '@asf/shared';
 
-export interface ProviderAuthView { mode: string; credentialPresent: boolean }
+export interface ProviderAuthView { mode: string; credentialPresent: boolean; vertex?: RunAuth['vertex'] }
 
 /**
  * The one rule for every runtime (#70): an agent runs only where something blocks
@@ -43,7 +43,7 @@ interface Candidate {
   reason?: string;
 }
 
-const sigOf = (v: ProviderAuthView | null): string => (v ? `${v.mode}|${v.credentialPresent ? 1 : 0}` : 'none');
+const sigOf = (v: ProviderAuthView | null): string => (v ? `${v.mode}|${v.credentialPresent ? 1 : 0}${v.vertex ? `|${JSON.stringify(v.vertex)}` : ''}` : 'none');
 
 export class RuntimeOffer {
   private readonly candidates: Candidate[];
@@ -85,23 +85,34 @@ export class RuntimeOffer {
 
   /**
    * Preflight every pending runtime that is due (never checked, its provider's view
-   * changed, or `recheckMs` elapsed). An offered runtime is left alone: a later
-   * credential failure surfaces on the run, as before. Returns true if the
-   * offered set changed.
+   * changed, or `recheckMs` elapsed). An offered runtime is re-checked only when its
+   * provider's view changed (a switch to Vertex, a new project or region: the old
+   * check says nothing about the new setup); if that fails it goes back to pending.
+   * Otherwise a later credential failure surfaces on the run, as before. Returns
+   * true if the offered set changed.
    */
   async refresh(viewFor: (p: ProviderKind) => ProviderAuthView | null, fallbackMode: (p: ProviderKind) => string): Promise<boolean> {
     let changed = false;
     for (const c of this.candidates) {
-      if (c.offered) continue;
       const view = viewFor(c.provider);
       const sig = sigOf(view);
+      if (c.offered) {
+        // Same view as when it was offered (or no view: api briefly unreachable): leave it.
+        if (!view || c.checkedSig === null || sig === c.checkedSig) continue;
+        c.checkedSig = sig; c.checkedAt = this.now();
+        const res = await this.preflight(c.runtime, { providerKind: c.provider, mode: view.mode, ...(view.vertex ? { vertex: view.vertex } : {}) } as RunAuth, { credentialPresent: view.credentialPresent });
+        if (res.ok) { c.mode = view.mode; continue; }
+        c.offered = false; c.reason = res.reason ?? 'auth check failed'; changed = true;
+        this.log(`agent auth changed and the new setup failed its check for ${c.runtime.kind} (${c.provider} ${view.mode}): ${res.reason}; no longer offering it`);
+        continue;
+      }
       const due = c.checkedSig === null || sig !== c.checkedSig || this.now() - c.checkedAt >= this.recheckMs;
       if (!due) continue;
       const mode = view?.mode ?? fallbackMode(c.provider);
       const first = c.checkedSig === null;
       const viewChanged = !first && sig !== c.checkedSig;
       c.checkedSig = sig; c.checkedAt = this.now();
-      const res = await this.preflight(c.runtime, { providerKind: c.provider, mode } as RunAuth, { credentialPresent: view?.credentialPresent ?? false });
+      const res = await this.preflight(c.runtime, { providerKind: c.provider, mode, ...(view?.vertex ? { vertex: view.vertex } : {}) } as RunAuth, { credentialPresent: view?.credentialPresent ?? false });
       if (!res.ok) {
         c.reason = res.reason ?? 'auth check failed';
         // Log the first failure and any failure after a change; a timed re-try that fails the same way stays quiet.
