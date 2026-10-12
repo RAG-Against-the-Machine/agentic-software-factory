@@ -57,15 +57,35 @@ test('an unchanged failure is re-tried after recheckMs (e.g. billing fixed on th
   assert.deepEqual(h.offer.kinds, ['codex']);
 });
 
-test('an offered runtime is never re-preflighted (a later credential failure surfaces on the run)', async () => {
+test('an offered runtime is not re-preflighted while its provider view is unchanged (a later credential failure surfaces on the run)', async () => {
   const h = harness({ anthropic: { mode: 'api-key', credentialPresent: true } });
   h.passes.add('claude-code');
   await h.refresh();
   h.calls.length = 0;
-  h.views.anthropic = { mode: 'oauth', credentialPresent: true };
   h.tick(10 * 600_000);
   await h.refresh();
   assert.ok(!h.calls.some((c) => c.startsWith('claude-code')));
+  assert.deepEqual(h.offer.kinds, ['claude-code']);
+});
+
+test('M9: a provider switch (e.g. to Vertex, or a new project) re-checks an offered runtime; failing it stops offering', async () => {
+  const h = harness({ anthropic: { mode: 'api-key', credentialPresent: true } });
+  h.passes.add('claude-code');
+  await h.refresh();
+  h.calls.length = 0;
+  h.views.anthropic = { mode: 'vertex', credentialPresent: true, vertex: { projectId: 'acme-ai', region: 'global' } };
+  assert.equal(await h.refresh(), false, 'passed again: offered set unchanged');
+  assert.equal(h.calls.filter((c) => c.startsWith('claude-code')).length, 1);
+  assert.deepEqual(h.offer.kinds, ['claude-code']);
+  h.passes.delete('claude-code');
+  h.views.anthropic = { mode: 'vertex', credentialPresent: true, vertex: { projectId: 'other-proj', region: 'global' } };
+  assert.equal(await h.refresh(), true);
+  assert.deepEqual(h.offer.kinds, []);
+  assert.deepEqual(h.offer.pending.includes('claude-code'), true);
+  // fixed: comes back on the next view change
+  h.passes.add('claude-code');
+  h.views.anthropic = { mode: 'vertex', credentialPresent: true, vertex: { projectId: 'acme-ai', region: 'global' } };
+  assert.equal(await h.refresh(), true);
   assert.deepEqual(h.offer.kinds, ['claude-code']);
 });
 

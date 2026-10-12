@@ -1,4 +1,4 @@
-import type { CreateRecurringTaskInput, RecurringTask, UpdateRecurringTaskInput, SplitFamilyWire, AdhocLimits, AdhocTask, AdhocFileInput, ActiveThemeWire, ThemeSummaryWire, ThemeImageRef, ArtifactWire, ArtifactVersionWire, TaskProgressWire, GateWire, RunMessageWire, Run, RunTask, RunEvent, SettingView, FleetWire, TodayWire, WorkQueueEntry, NotificationWire, TicketScope, TicketSprint, LocalWorkerStatus, UpdateStatus, ThirdPartySkill, SkillRole } from '@asf/shared';
+import type { CreateRecurringTaskInput, RecurringTask, UpdateRecurringTaskInput, SplitFamilyWire, AdhocLimits, AdhocTask, AdhocFileInput, ActiveThemeWire, ThemeSummaryWire, ThemeImageRef, ArtifactWire, ArtifactVersionWire, TaskProgressWire, GateWire, RunMessageWire, Run, RunTask, RunEvent, SettingView, FleetWire, TodayWire, WorkQueueEntry, NotificationWire, TicketScope, TicketSprint, LocalWorkerStatus, UpdateStatus, ThirdPartySkill, SkillRole, VertexCheckState } from '@asf/shared';
 
 export interface TicketRow { id: string; key: string; title: string; bucket: string; priority: number | null; status: string; url: string; body: string; }
 export interface RunDetail { run: Run; tasks: RunTask[]; gates: GateWire[]; artifacts: ArtifactWire[]; artifactVersions?: ArtifactVersionWire[]; taskProgress?: Record<string, TaskProgressWire>; messages?: RunMessageWire[]; split?: SplitFamilyWire | null;
@@ -128,6 +128,8 @@ export const api = {
   ticketPreflight: () => fetch('/api/providers/ticket/preflight').then(j<{ kind?: string; ok: boolean; identity?: string; reason?: string }>),
   scmPreflight: () => fetch('/api/providers/scm/preflight').then(j<{ kind?: string; ok: boolean; identity?: string; reason?: string }>),
   models: () => fetch('/api/models').then(j<{ models: { id: string; label: string; tier: string; providerId: string; runtimes: string[] }[] }>),
+  vertexCheckStart: (req: { projectId: string; region: string; models: string[] }) => sendJson<{ id: string }>('POST', '/api/providers/vertex/check', req),
+  vertexCheck: (id: string) => fetch(`/api/providers/vertex/check/${encodeURIComponent(id)}`).then(j<VertexCheckState>),
   openaiCheck: () => fetch('/api/providers/openai/check').then(j<{ ok: boolean; identity?: string; reason?: string; code?: string }>),
   fleet: () => fetch('/api/fleet').then(j<Fleet>),
   setupStatus: () => fetch('/api/setup/status').then(j<SetupStatus>),

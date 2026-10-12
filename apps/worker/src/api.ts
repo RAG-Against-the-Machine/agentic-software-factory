@@ -1,3 +1,4 @@
+import type { VertexCheckRequest, VertexCheckResult } from '@asf/shared';
 import type { AdhocTask, ClaimResponse, CreateAdhocInput, FinishTaskInput, RunContext, RunMessageInput, RunMessageWire, RuntimeStatus, WorkerRegister } from '@asf/shared';
 import { claimResponseSchema, runContextSchema } from '@asf/shared';
 import { config } from './config.js';
@@ -43,6 +44,16 @@ export const api = {
     const res = await fetch(`${config.bffUrl}/api/agent-auth`, { headers: headers() }).catch(() => null);
     if (!res || !res.ok) return null;
     return res.json().catch(() => null) as Promise<AgentAuthStatus | null>;
+  },
+  /** Take the oldest queued Vertex check (M9); null when none waits or the api is unreachable. */
+  async vertexCheckNext(): Promise<{ id: string; request: VertexCheckRequest } | null> {
+    const res = await fetch(`${config.bffUrl}/api/agent-checks/vertex/next`, { method: 'POST', headers: headers(), body: JSON.stringify({ worker: config.id }) }).catch(() => null);
+    if (!res || !res.ok) return null;
+    const j = await res.json().catch(() => ({})) as { check?: { id: string; request: VertexCheckRequest } | null };
+    return j.check ?? null;
+  },
+  async vertexCheckResult(id: string, result: VertexCheckResult): Promise<void> {
+    await post(config.bffUrl, `/api/agent-checks/vertex/${encodeURIComponent(id)}`, { worker: config.id, result });
   },
   async deregister(): Promise<void> {
     await fetch(`${config.registryUrl}/workers/${config.id}/deregister`, { method: 'POST', headers: headers(), body: '{}' }).catch(() => {});

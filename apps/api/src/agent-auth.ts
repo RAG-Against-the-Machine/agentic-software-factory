@@ -1,6 +1,8 @@
 import { AUTH_MODES, PROVIDER_KINDS, type ProviderKind, type RunAuth } from '@asf/shared';
 import { SavedSecretUnreadable } from './registry/client.js';
 import { cfg } from './settings.js';
+import { catalogue } from './models.js';
+import { parseModelAllowlist } from '@asf/shared';
 import { resolveProviderSecret } from './providers/secrets.js';
 
 /**
@@ -43,6 +45,7 @@ export async function computeRunAuth(providerKind: ProviderKind = 'anthropic'): 
   const out: RunAuth = { providerKind, mode };
   const baseUrl = def.baseUrlKey ? String(cfg(def.baseUrlKey) ?? '').trim() : '';
   if (baseUrl) out.baseUrl = baseUrl;
+  if (providerKind === 'anthropic' && mode === 'vertex') out.vertex = vertexAuth();
   const key = def.credentialKey[mode];
   if (key) {
     const credential = await resolveCredential(key);
@@ -66,9 +69,37 @@ export async function computeRunAuths(): Promise<Partial<Record<ProviderKind, Ru
   return Object.fromEntries(entries.filter(([, v]) => v !== null));
 }
 
+/**
+ * Vertex settings for the worker (no secret: the Google login stays on the worker
+ * host). defaultModel/fastModel are what Claude Code falls back to when ASF passes
+ * no --model (its auth check) and for its own background calls; on Vertex they
+ * must be ids the project has enabled, so they come from the allowed catalogue.
+ */
+export function vertexAuth(): NonNullable<RunAuth['vertex']> {
+  const models = catalogue().models.filter((m) => m.providerId === 'anthropic' && m.runtimes.includes('claude-code'));
+  const pick = (tier: string) => models.find((m) => m.tier === tier)?.id;
+  const out: NonNullable<RunAuth['vertex']> = {};
+  const projectId = String(cfg('ANTHROPIC_VERTEX_PROJECT_ID') ?? '').trim();
+  const region = String(cfg('CLOUD_ML_REGION') ?? '').trim();
+  const defaultModel = pick('balanced') ?? models[0]?.id;
+  const fastModel = pick('fast') ?? defaultModel;
+  const maxModel = pick('max') ?? defaultModel;
+  if (projectId) out.projectId = projectId;
+  if (region) out.region = region;
+  // Only when the org narrowed the list: otherwise Claude Code's own defaults stand.
+  if (parseModelAllowlist(cfg('MODEL_ALLOWLIST'))) {
+    if (defaultModel) out.defaultModel = defaultModel;
+    if (fastModel) out.fastModel = fastModel;
+    if (maxModel) out.maxModel = maxModel;
+  }
+  return out;
+}
+
 export interface ProviderAuthStatus {
   mode: string;
   credentialPresent: boolean;
+  /** anthropic vertex mode: what the worker needs to check and run it (never a secret). */
+  vertex?: RunAuth['vertex'];
   /** Set when a credential IS saved but can't be read (#9: ASF_SECRET_KEY missing/wrong). */
   error?: string;
 }
@@ -89,8 +120,13 @@ export async function describeAgentAuth(): Promise<ProviderAuthStatus & { provid
 async function describeOne(providerKind: ProviderKind): Promise<ProviderAuthStatus> {
   const def = PROVIDER_AUTH[providerKind];
   const mode = String(cfg(def.modeKey));
+  // vertex: "present" = a project is set; the Google login itself is checked on the worker.
+  if (providerKind === 'anthropic' && mode === 'vertex') {
+    const vertex = vertexAuth();
+    return { mode, credentialPresent: !!vertex.projectId, vertex };
+  }
   const key = def.credentialKey[mode];
-  if (!key) return { mode, credentialPresent: true }; // vertex/bedrock/chatgpt/none carry no credential here
+  if (!key) return { mode, credentialPresent: true }; // bedrock/chatgpt/none carry no credential here
   try {
     return { mode, credentialPresent: (await resolveCredential(key)).length > 0 };
   } catch (err) {

@@ -17,6 +17,7 @@ import { loadRuntime } from './runtimes/index.js';
 import { runSegment } from './segment.js';
 import { runPublish } from './publish.js';
 import { RuntimeOffer, containerRefusal } from './offer.js';
+import { runVertexCheck } from './vertex-check.js';
 
 function log(msg: string, extra: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ t: new Date().toISOString(), worker: config.id, msg, ...extra }));
@@ -49,7 +50,7 @@ async function executeClaim(claim: NonNullable<Awaited<ReturnType<typeof api.cla
 }
 
 async function pollOnce(runtimes: string[]): Promise<boolean> {
-  if (stopping || running >= config.maxConcurrent) return false;
+  if (stopping || running >= config.maxConcurrent || !runtimes.length) return false;
   const claim = await api.claim(runtimes).catch((e) => { log(`claim failed: ${e}`); return null; });
   if (!claim) return false;
   running++;
@@ -91,6 +92,10 @@ async function main(): Promise<void> {
     probed.push({ runtime, provider: providerFor(kind), version: probe.version || undefined });
   }
   if (!probed.length) { log(`no runtime is installed (tried ${config.runtimes.join(', ')}); exiting`); process.exit(1); }
+  // Vertex checks (M9) run here, the only place with the Google login. Started before
+  // the wait-for-an-AI loop below: a fresh worker is exactly where the first check runs.
+  const claude = probed.find((p) => p.runtime.kind === 'claude-code');
+  if (claude) startVertexChecks(claude.runtime);
   const offer = new RuntimeOffer(probed, preflightAgentAuth, log, config.authRecheckMs);
   for (const m of missing) offer.notInstalled(m.kind, m.reason);
   await offer.refresh((p) => effFor(eff, p), fallbackMode);
@@ -116,6 +121,7 @@ async function main(): Promise<void> {
     }).listen(config.healthPort, '0.0.0.0', () => log('health listener', { port: config.healthPort }));
   }
 
+  let registered = true;
   const { staled } = await api.register({ runtimes: offer.kinds, maxConcurrent: config.maxConcurrent, inFlightTaskIds: [], authMode: registeredAuthMode, preflight: offer.status });
   if (staled.length) log('staled runs this worker previously held', { staled });
 
@@ -133,11 +139,18 @@ async function main(): Promise<void> {
         ? `warning: ${provider} ${cur.mode} credential is saved but unreadable: ${(cur as { error?: string }).error}`
         : `warning: ${provider} ${cur.mode} mode selected but its credential is not set; runs will fail until one is entered in Settings → Which AI should do the work?`);
     }
-    const gained = await offer.refresh((p) => effFor(eff, p), fallbackMode);
-    if (!modeChanged && !gained) return;
-    if (gained) log('offering more runtimes; re-registering', { runtimes: offer.kinds });
+    const before = offer.kinds.join(',');
+    const changed = await offer.refresh((p) => effFor(eff, p), fallbackMode);
+    if (!offer.kinds.length) {
+      // The new setup failed its check for every runtime: stop taking work until it passes.
+      if (registered) { log('no runtime passes its auth check any more; deregistering until one does'); await api.deregister(); registered = false; }
+      return;
+    }
+    if (!modeChanged && !changed && registered) return;
+    if (changed) log('offered runtimes changed; re-registering', { from: before, runtimes: offer.kinds });
     const authMode = modeChanged ? cur.mode : registeredAuthMode;
-    await api.register({ runtimes: offer.kinds, maxConcurrent: config.maxConcurrent, inFlightTaskIds: [], authMode, preflight: offer.status }).catch((e) => log(`re-register failed: ${e}`));
+    await api.register({ runtimes: offer.kinds, maxConcurrent: config.maxConcurrent, inFlightTaskIds: [], authMode, preflight: offer.status })
+      .then(() => { registered = true; }).catch((e) => log(`re-register failed: ${e}`));
     registeredAuthMode = authMode;
   }
 
@@ -156,6 +169,26 @@ async function main(): Promise<void> {
   for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { void shutdown(); });
   log('registered; polling for tasks');
   // The non-unref'd interval timers keep the event loop alive.
+}
+
+/** Poll the api for queued Vertex checks and run them one at a time. */
+function startVertexChecks(claudeRuntime: AgentRuntime): void {
+  let busy = false;
+  const tick = async () => {
+    if (busy || stopping) return;
+    busy = true;
+    try {
+      const job = await api.vertexCheckNext();
+      if (!job) return;
+      log('vertex check', { id: job.id, project: job.request.projectId, region: job.request.region, models: job.request.models.length });
+      const result = await runVertexCheck(job.request, { claudeCode: (auth) => claudeRuntime.preflight(auth) });
+      log('vertex check done', { id: job.id, ok: result.ok, login: result.login.code ?? 'ok', working: result.models.filter((m) => m.ok).map((m) => m.id) });
+      await api.vertexCheckResult(job.id, result).catch((e) => log(`vertex check result not delivered: ${e}`));
+    } catch (e) {
+      log(`vertex check failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally { busy = false; }
+  };
+  setInterval(() => { void tick(); }, config.vertexCheckPollMs);
 }
 
 main().catch((err) => { log(`fatal: ${err instanceof Error ? err.message : String(err)}`); process.exit(1); });

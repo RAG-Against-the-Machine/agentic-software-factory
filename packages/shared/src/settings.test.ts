@@ -87,8 +87,9 @@ test('every org-settable key the worker reads is delivered to it via the run con
   // the /admin UI — accepted there, ignored on the wire (the --max-turns 40 bug).
   const workerOrgKeys = (Object.keys(SETTINGS) as Array<keyof typeof SETTINGS>)
     .filter((k) => SETTINGS[k].readBy.includes('worker') && SETTINGS[k].tiers.includes('org') && !SETTINGS[k].secret)
-    // Agent-auth keys already travel on the context as `auth` (resolved by the api's agent-auth.ts).
-    .filter((k) => k !== 'AGENT_AUTH_MODE');
+    // Agent-auth keys already travel on the context as `auth` (resolved by the api's agent-auth.ts),
+    // the Vertex project/region included (RunAuth.vertex, M9).
+    .filter((k) => !['AGENT_AUTH_MODE', 'ANTHROPIC_VERTEX_PROJECT_ID', 'CLOUD_ML_REGION'].includes(k));
   const delivered = new Set<string>(WORKER_ORG_SETTING_KEYS);
   const missing = workerOrgKeys.filter((k) => !delivered.has(k));
   assert.deepEqual(missing, [], `org-settable worker keys not delivered via RunContext.workerSettings: ${missing.join(', ')} — add them to WORKER_ORG_SETTING_KEYS + workerSettingsSchema + routes/runs.ts context`);
