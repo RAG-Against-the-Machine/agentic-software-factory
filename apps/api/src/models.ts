@@ -1,5 +1,5 @@
 import type { TeamTemplate, Role, EffortLevel, ModelCatalogue, ModelInfo } from '@asf/shared';
-import { isKnownModel, modelIds, isKnownEffort, EFFORT_LEVELS, mergeCatalogue } from '@asf/shared';
+import { isKnownModel, modelIds, isKnownEffort, EFFORT_LEVELS, effectiveCatalogue, mergeCatalogue, parseModelAllowlist, substituteModel } from '@asf/shared';
 import { cfg } from './settings.js';
 
 export class BadModelError extends Error {}
@@ -14,11 +14,11 @@ export type OrgRoleRuntimes = Partial<Record<Role, string | null | undefined>>;
 
 /**
  * The model catalogue a dispatch validates against: the built-ins merged with
- * MODEL_CATALOG_EXTRA. Read on every call, so an /admin edit applies to the next
- * dispatch with no restart.
+ * MODEL_CATALOG_EXTRA, narrowed to MODEL_ALLOWLIST. Read on every call, so an
+ * /admin edit applies to the next dispatch with no restart.
  */
 export function catalogue(): ModelCatalogue {
-  return mergeCatalogue(cfg('MODEL_CATALOG_EXTRA'));
+  return effectiveCatalogue(cfg('MODEL_CATALOG_EXTRA'), cfg('MODEL_ALLOWLIST'));
 }
 
 /** Per-role runtime inputs, and the catalogue to validate against (default: catalogue()). */
@@ -66,8 +66,19 @@ export function resolveRoleModels(
   return {
     ...team,
     roles: team.roles.map((r) => {
-      const model = pickModel(r.role, r.model);
       const runtime = pickRuntime(r.role, r.runtime);
+      const model = pickModel(r.role, r.model);
+      // A template default the allowlist hides (a Vertex org without claude-opus-4-8)
+      // falls back to an allowed model of the same tier, so a fresh install with only
+      // MODEL_ALLOWLIST set can still dispatch. An explicit pick is never substituted.
+      if (model.source === 'team template' && model.id && !isKnownModel(model.id, models)) {
+        const sub = substituteModel(model.id, runtime, models, mergeCatalogue(cfg('MODEL_CATALOG_EXTRA')).models);
+        if (!sub) {
+          throw new BadModelError(`no allowed model can run the ${r.role} step on runtime "${runtime}"; add one to MODEL_ALLOWLIST (allowed now: ${modelIds(models).join(', ') || 'none'}) or set MODEL_DEFAULT_${r.role.toUpperCase()}`);
+        }
+        model.id = sub;
+        model.source = 'team template (allowlist substitute)';
+      }
       if (model.id) checkPair(r.role, model.id, model.source, runtime, models);
       return { ...r, model: model.id, effort: pickEffort(r.role, r.effort), runtime };
     }),
@@ -75,6 +86,9 @@ export function resolveRoleModels(
 }
 
 function check(role: Role, id: string, source: string, models: ModelInfo[]): string {
+  if (!isKnownModel(id, models) && isKnownModel(id, mergeCatalogue(cfg('MODEL_CATALOG_EXTRA')).models) && parseModelAllowlist(cfg('MODEL_ALLOWLIST'))) {
+    throw new BadModelError(`model "${id}" for ${role} (from ${source}) is not on this factory's allowed model list (MODEL_ALLOWLIST); choose one of ${modelIds(models).join(', ')}`);
+  }
   if (!isKnownModel(id, models)) {
     throw new BadModelError(`unknown model "${id}" for ${role} (from ${source}); choose one of ${modelIds(models).join(', ')}`);
   }
@@ -82,7 +96,8 @@ function check(role: Role, id: string, source: string, models: ModelInfo[]): str
 }
 
 function checkPair(role: Role, id: string, source: string, runtime: string, models: ModelInfo[]): void {
-  const m = models.find((x) => x.id === check(role, id, source, models))!;
+  const m = models.find((x) => x.id === check(role, id, source, models));
+  if (!m) throw new BadModelError(`unknown model "${id}" for ${role} (from ${source})`);
   if (!m.runtimes.includes(runtime)) {
     throw new BadModelError(`model "${id}" for ${role} (from ${source}) cannot run on runtime "${runtime}"; it runs on ${m.runtimes.join(', ')}`);
   }

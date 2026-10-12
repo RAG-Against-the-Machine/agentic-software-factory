@@ -3,7 +3,7 @@ import { STANDARD_TEAM, GatePolicyError, resolvePipeline, skipRoles, disabledRol
 import type { GateConfig, ScmProvider, TicketProvider } from '@asf/shared';
 import { registry, RunConflict } from '../registry/client.js';
 import type { RunWithTasks } from '@asf/shared';
-import { cfg } from '../settings.js';
+import { cfg, orgValues } from '../settings.js';
 import { resolveIdentity } from '../identity.js';
 import { transitionTicketTo, parsePreferredStatuses } from '../tickets/transition.js';
 import { assignTicketTo } from '../tickets/assign.js';
@@ -36,9 +36,14 @@ export interface DispatchInput {
 
 /** The org-tier per-role model defaults (MODEL_DEFAULT_<ROLE>), resolved env > org > default. */
 function orgRoleModels(): OrgRoleModels {
+  // Only values someone actually SET (env or org). An unset MODEL_DEFAULT_<ROLE> is
+  // left to the team template, which may substitute an allowed model when
+  // MODEL_ALLOWLIST hides it; the setting's default equals the template anyway.
+  const set = (k: 'MODEL_DEFAULT_PLANNER' | 'MODEL_DEFAULT_IMPLEMENTER' | 'MODEL_DEFAULT_TESTER' | 'MODEL_DEFAULT_REVIEWER') =>
+    (process.env[k] ?? '') !== '' || (orgValues()[k] !== undefined && orgValues()[k] !== null) ? cfg(k) : undefined;
   return {
-    planner: cfg('MODEL_DEFAULT_PLANNER'), implementer: cfg('MODEL_DEFAULT_IMPLEMENTER'),
-    tester: cfg('MODEL_DEFAULT_TESTER'), reviewer: cfg('MODEL_DEFAULT_REVIEWER'),
+    planner: set('MODEL_DEFAULT_PLANNER'), implementer: set('MODEL_DEFAULT_IMPLEMENTER'),
+    tester: set('MODEL_DEFAULT_TESTER'), reviewer: set('MODEL_DEFAULT_REVIEWER'),
   };
 }
 
@@ -209,7 +214,14 @@ export function registerDispatchRoutes(app: FastifyInstance, deps: { tickets: Ti
       // A MODEL_DEFAULT_<ROLE> that no longer fits the catalogue: say why, pre-select the template.
       if (!(e instanceof BadModelError || e instanceof BadEffortError)) throw e;
       whyNot.push(e.message);
-      defaults = defaultRoleModels(STANDARD_TEAM, {}, {});
+      try {
+        defaults = defaultRoleModels(STANDARD_TEAM, {}, {});
+      } catch (e2) {
+        // Even the template can't run under this MODEL_ALLOWLIST: no pre-selection; whyNot says why.
+        if (!(e2 instanceof BadModelError)) throw e2;
+        if (e2.message !== e.message) whyNot.push(e2.message);
+        defaults = { models: {}, efforts: {}, runtimes: {} };
+      }
     }
 
     return {

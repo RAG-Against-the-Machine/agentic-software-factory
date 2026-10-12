@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MODELS, DEFAULT_ROLE_MODELS, DEFAULT_ROLE_EFFORT, isKnownModel, isKnownEffort, EFFORT_LEVELS, mergeCatalogue } from './models.js';
+import { MODELS, DEFAULT_ROLE_MODELS, DEFAULT_ROLE_EFFORT, isKnownModel, isKnownEffort, EFFORT_LEVELS, mergeCatalogue, effectiveCatalogue, parseModelAllowlist, substituteModel } from './models.js';
 import { STANDARD_TEAM } from './team.js';
 import { priceUsage, rateFor } from './pricing.js';
 import { resolve, SettingError } from './settings.js';
@@ -122,4 +122,36 @@ test('rateFor prices an extra model from its catalogue rate', () => {
   assert.deepEqual(rateFor('deepseek-chat', models), deepseek.rate);
   assert.equal(rateFor('deepseek-chat'), null, 'unpriced against the built-ins alone');
   assert.equal(priceUsage('deepseek-chat', { inputTokens: 1_000_000, outputTokens: 1_000_000 }, models), 0.27 + 1.1);
+});
+
+test('MODEL_ALLOWLIST: blank means no list; ids split on commas and whitespace', () => {
+  assert.equal(parseModelAllowlist(''), null);
+  assert.equal(parseModelAllowlist('  ,  '), null);
+  assert.equal(parseModelAllowlist(undefined), null);
+  assert.deepEqual([...parseModelAllowlist('claude-sonnet-5, claude-haiku-4-5@20251001\nclaude-opus-5[1m]')!], ['claude-sonnet-5', 'claude-haiku-4-5@20251001', 'claude-opus-5[1m]']);
+});
+
+test('effectiveCatalogue: a Vertex org adds its own ids and the allowlist hides the rest', () => {
+  const extra = { models: [{ id: 'claude-haiku-4-5@20251001', tier: 'fast', providerId: 'anthropic', runtimes: ['claude-code'] }] };
+  assert.deepEqual(effectiveCatalogue(extra, '').models.map((m) => m.id), mergeCatalogue(extra).models.map((m) => m.id), 'no allowlist = the merged catalogue');
+  const cat = effectiveCatalogue(extra, 'claude-sonnet-5,claude-haiku-4-5@20251001,claude-not-in-catalogue');
+  assert.deepEqual(cat.models.map((m) => m.id).sort(), ['claude-haiku-4-5@20251001', 'claude-sonnet-5'], 'an allowlisted id missing from the catalogue is ignored, not invented');
+  assert.equal(cat.models.find((m) => m.id === 'claude-haiku-4-5@20251001')!.label, 'claude-haiku-4-5@20251001');
+  assert.ok(cat.providers.some((p) => p.id === 'openai'), 'providers are not filtered');
+});
+
+test('substituteModel: same tier first, then the nearest; only models the runtime can drive', () => {
+  const vertex = mergeCatalogue({ models: [
+    { id: 'claude-haiku-4-5@20251001', tier: 'fast', providerId: 'anthropic', runtimes: ['claude-code'] },
+    { id: 'claude-opus-5-5', tier: 'max', providerId: 'anthropic', runtimes: ['claude-code'] },
+  ] }).models.filter((m) => ['claude-haiku-4-5@20251001', 'claude-sonnet-5', 'claude-opus-5-5'].includes(m.id));
+  assert.equal(substituteModel('claude-opus-4-8', 'claude-code', vertex), 'claude-opus-5-5');
+  assert.equal(substituteModel('claude-haiku-4-5', 'claude-code', vertex), 'claude-haiku-4-5@20251001');
+  assert.equal(substituteModel('claude-sonnet-5', 'claude-code', vertex), 'claude-sonnet-5', 'runnable = kept');
+  assert.equal(substituteModel('gpt-6-astra', 'codex', vertex), null, 'nothing runs on codex');
+  assert.equal(substituteModel('claude-opus-4-8', 'claude-code', vertex.filter((m) => m.tier === 'fast')), 'claude-haiku-4-5@20251001');
+});
+
+test('allowlist entries lose surrounding quotes', () => {
+  assert.deepEqual([...parseModelAllowlist('"claude-sonnet-5", \'claude-opus-5[1m]\'')!], ['claude-sonnet-5', 'claude-opus-5[1m]']);
 });

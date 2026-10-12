@@ -434,3 +434,36 @@ test('the dispatch preview lists the roles the org switched off (none by default
   assert.deepEqual(res.json().orgDisabledRoles, []);
   await a.close();
 });
+
+test('done when (#1): a Vertex org adds its ids + MODEL_ALLOWLIST; the preview offers only those and a fresh install still dispatches', async () => {
+  process.env.ORG_MAX_COST_USD = '100';
+  let created: { team: { roles: { role: string; model: string | null }[] } } | undefined;
+  stubFleet([['claude-code']], { onCreateRun: (input) => { created = input as typeof created; } });
+  await loadOrgSettings();
+  try {
+    const a = Fastify();
+    const tickets = new MockTicketProvider();
+    registerDispatchRoutes(a, { tickets, scm: new MockScmProvider() });
+    registerAdminRoutes(a, { tickets: new TicketProviderRegistry(async () => tickets, () => 'mock'), scm: new ScmProviderRegistry(async () => new MockScmProvider(), () => 'mock') });
+    await a.ready();
+    const vertexHaiku = { id: 'claude-haiku-4-5@20251001', tier: 'fast', providerId: 'anthropic', runtimes: ['claude-code'] };
+    assert.equal((await a.inject({ method: 'PUT', url: '/api/settings/MODEL_CATALOG_EXTRA', payload: { value: { models: [vertexHaiku] } } })).statusCode, 200);
+    assert.equal((await a.inject({ method: 'PUT', url: '/api/settings/MODEL_ALLOWLIST', payload: { value: 'claude-haiku-4-5@20251001, claude-sonnet-5' } })).statusCode, 200);
+    const pv = (await a.inject({ method: 'GET', url: '/api/tickets/asf-1/dispatch' })).json();
+    assert.deepEqual(pv.models.map((m: { id: string }) => m.id).sort(), ['claude-haiku-4-5@20251001', 'claude-sonnet-5']);
+    assert.ok(!pv.models.some((m: { id: string }) => m.id === 'claude-fable-5-1'), 'fable gone');
+    assert.equal(pv.defaultModels.planner, 'claude-sonnet-5', 'hidden opus-4-8 template default -> allowed substitute');
+    assert.deepEqual(pv.whyNot, []);
+    const ok = await a.inject({ method: 'POST', url: '/api/tickets/asf-1/dispatch', payload: { repoId: '1', modelOverrides: { tester: 'claude-haiku-4-5@20251001' } } });
+    assert.equal(ok.statusCode, 201, ok.body);
+    assert.ok(created);
+    const roles = Object.fromEntries(created.team.roles.map((r) => [r.role, r.model]));
+    assert.deepEqual(roles, { planner: 'claude-sonnet-5', implementer: 'claude-sonnet-5', tester: 'claude-haiku-4-5@20251001', reviewer: 'claude-sonnet-5' });
+    // an allowlist nothing can run: the preview explains instead of a 500
+    assert.equal((await a.inject({ method: 'PUT', url: '/api/settings/MODEL_ALLOWLIST', payload: { value: 'typo' } })).statusCode, 200);
+    const bad = await a.inject({ method: 'GET', url: '/api/tickets/asf-1/dispatch' });
+    assert.equal(bad.statusCode, 200);
+    assert.ok(bad.json().whyNot.some((w: string) => /no allowed model can run/.test(w)));
+    await a.close();
+  } finally { await clearOrg(); }
+});

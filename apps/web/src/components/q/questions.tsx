@@ -301,6 +301,7 @@ export const aiQ: Question = {
     const b = store.byKey;
     const get = (k: string) => b[k]?.value;
     const onOpenai = detectTeamAi(get) === 'openai';
+    const models = useCatalogue();
     const current = str(b.AGENT_AUTH_MODE);
     const envOnly = !onOpenai && (current === 'vertex' || current === 'bedrock');
     const [choice, setChoice] = useState<AiChoice>(onOpenai ? 'openai' : (current as AiChoice));
@@ -309,11 +310,11 @@ export const aiQ: Question = {
     const locked = !!b.AGENT_AUTH_MODE?.envPinned || envOnly;
     const save = () => {
       if (choice === 'openai') {
-        return run([...secretEntry('OPENAI_API_KEY', secret), ['AGENT_AUTH_OPENAI_MODE', 'api-key'], ...teamAiWrites('openai', get, MODELS)],
+        return run([...secretEntry('OPENAI_API_KEY', secret), ['AGENT_AUTH_OPENAI_MODE', 'api-key'], ...teamAiWrites('openai', get, models)],
           () => (!secret.trim() && !secretIsSet(b.OPENAI_API_KEY) ? 'Paste your OpenAI API key.' : secret.trim() && !secret.trim().startsWith('sk-') ? 'That doesn’t look like an OpenAI key. It starts with sk-.' : null));
       }
       const credKey = choice === 'oauth-token' ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY';
-      return run([...secretEntry(credKey, secret), ['AGENT_AUTH_MODE', choice], ...teamAiWrites('claude', get, MODELS)],
+      return run([...secretEntry(credKey, secret), ['AGENT_AUTH_MODE', choice], ...teamAiWrites('claude', get, models)],
         () => (!envOnly && !secret.trim() && !secretIsSet(b[credKey]) ? (choice === 'oauth-token' ? 'Paste your subscription token.' : 'Paste your API key.') : null));
     };
     return (
@@ -512,8 +513,23 @@ const ROLES = [
 ] as const;
 const EFFORT_LABEL: Record<string, string> = { low: 'Quick', medium: 'Normal', high: 'Thorough', xhigh: 'Very thorough', max: 'As hard as it can' };
 const TIER_LABEL: Record<string, string> = { fast: 'Fastest', balanced: 'Balanced', max: 'Most capable' };
+type CatalogueModel = { id: string; label: string; tier: string; runtimes: string[] };
+// The factory's runnable models (GET /api/models: built-ins + MODEL_CATALOG_EXTRA,
+// narrowed to MODEL_ALLOWLIST). Starts as the built-in list so the first paint
+// works; useCatalogue() swaps in the server's answer. Module-level so the
+// collapsed-row summaries (plain functions, no hooks) read the same list.
+let catalogueCache: CatalogueModel[] = MODELS;
+function useCatalogue(): CatalogueModel[] {
+  const [models, setModels] = useState<CatalogueModel[]>(catalogueCache);
+  useEffect(() => {
+    let live = true;
+    api.models().then((r) => { catalogueCache = r.models; if (live) setModels(r.models); }).catch(() => { /* keep the built-ins */ });
+    return () => { live = false; };
+  }, []);
+  return models;
+}
 const modelLabel = (id: string) => {
-  const m = MODELS.find((x) => x.id === id);
+  const m = catalogueCache.find((x) => x.id === id);
   return m ? `${TIER_LABEL[m.tier] ?? m.tier} (${m.label.split(' — ')[0]})` : id;
 };
 
@@ -522,7 +538,7 @@ export const modelsQ: Question = {
   title: 'Which AI model does each job?',
   why: 'Stronger models do better work on hard tickets, but cost more and take longer. You can still change this for a single ticket when you send it.',
   summary: (b) => {
-    const tiers = ROLES.map((r) => MODELS.find((m) => m.id === str(b[`MODEL_DEFAULT_${r.role}`]))?.tier ?? '?');
+    const tiers = ROLES.map((r) => { const id = str(b[`MODEL_DEFAULT_${r.role}`]); return catalogueCache.find((m) => m.id === id)?.tier ?? (id || '?'); });
     const plan = TIER_LABEL[tiers[0]] ?? tiers[0], rest = TIER_LABEL[tiers[2]] ?? tiers[2];
     return tiers[0] === tiers[1] && tiers[2] === tiers[3]
       ? <><b>{plan}</b> plans and writes code · <b>{rest}</b> tests and reviews</>
@@ -530,6 +546,7 @@ export const modelsQ: Question = {
   },
   Body: function ModelsBody({ store, actions }) {
     const b = store.byKey;
+    const models = useCatalogue();
     const [d, setD] = useState<Record<string, string>>(() => Object.fromEntries(ROLES.flatMap((r) => [[`MODEL_DEFAULT_${r.role}`, str(b[`MODEL_DEFAULT_${r.role}`])], [`EFFORT_DEFAULT_${r.role}`, str(b[`EFFORT_DEFAULT_${r.role}`])]])));
     const { busy, error, run } = useSaver(store);
     const save = () => run(Object.entries(d).filter(([k, v]) => v !== str(b[k])));
@@ -543,7 +560,8 @@ export const modelsQ: Question = {
               <tr key={r.role}>
                 <td>{r.label}</td>
                 <td><select value={d[mk]} disabled={b[mk]?.envPinned} onChange={(e) => setD({ ...d, [mk]: e.target.value })}>
-                  {MODELS.filter((m) => m.runtimes.includes(str(b[`RUNTIME_DEFAULT_${r.role}`]) || 'claude-code')).map((m) => <option key={m.id} value={m.id}>{modelLabel(m.id)}</option>)}
+                  {!models.some((m) => m.id === d[mk]) && <option value={d[mk]}>{d[mk] ? `${d[mk]} (not available)` : 'Choose a model'}</option>}
+                  {models.filter((m) => m.runtimes.includes(str(b[`RUNTIME_DEFAULT_${r.role}`]) || 'claude-code')).map((m) => <option key={m.id} value={m.id}>{modelLabel(m.id)}</option>)}
                 </select></td>
                 <td><select value={d[ek]} disabled={b[ek]?.envPinned} onChange={(e) => setD({ ...d, [ek]: e.target.value })}>
                   {(b[ek]?.values ?? []).map((v) => <option key={v} value={v}>{EFFORT_LABEL[v] ?? v}</option>)}

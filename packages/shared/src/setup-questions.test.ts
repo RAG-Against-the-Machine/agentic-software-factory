@@ -89,3 +89,16 @@ test('the whole team moves between Claude and ChatGPT/OpenAI: runtimes + models 
   assert.equal(back.MODEL_DEFAULT_IMPLEMENTER, 'claude-opus-4-8');
   assert.equal(back.MODEL_DEFAULT_TESTER, 'claude-sonnet-5');
 });
+
+test('teamAiWrites never writes a model the (allowlisted) catalogue hides', () => {
+  const narrowed = MODELS.filter((m) => ['claude-haiku-4-5', 'claude-sonnet-5'].includes(m.id));
+  const openai: Record<string, string> = { RUNTIME_DEFAULT_IMPLEMENTER: 'codex', MODEL_DEFAULT_PLANNER: 'gpt-6-astra', MODEL_DEFAULT_TESTER: 'gpt-6-sol' };
+  const writes = Object.fromEntries(teamAiWrites('claude', (k) => openai[k] ?? '', narrowed));
+  assert.equal(writes.MODEL_DEFAULT_PLANNER, 'claude-sonnet-5', 'opus-4-8 hidden: nearest allowed tier');
+  assert.equal(writes.MODEL_DEFAULT_TESTER, 'claude-sonnet-5');
+  for (const v of Object.entries(writes).filter(([k]) => k.startsWith('MODEL_')).map(([, v]) => v)) assert.ok(narrowed.some((m) => m.id === v), v);
+  // nothing runnable on codex: the model write is skipped, the runtime still moves
+  const toOpenai = Object.fromEntries(teamAiWrites('openai', () => '', narrowed));
+  assert.equal(toOpenai.RUNTIME_DEFAULT_PLANNER, 'codex');
+  assert.equal(toOpenai.MODEL_DEFAULT_PLANNER, undefined);
+});

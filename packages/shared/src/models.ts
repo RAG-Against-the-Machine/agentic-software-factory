@@ -105,6 +105,49 @@ export function mergeCatalogue(extra: unknown): ModelCatalogue {
   };
 }
 
+/**
+ * MODEL_ALLOWLIST as a set of ids: comma/whitespace separated, blank = no list
+ * (every catalogue model is allowed). Returns null for "no list".
+ */
+export function parseModelAllowlist(raw: unknown): Set<string> | null {
+  const ids = String(raw ?? '').split(/[\s,]+/).map((s) => s.trim().replace(/^["']+|["']+$/g, '')).filter(Boolean);
+  return ids.length ? new Set(ids) : null;
+}
+
+/**
+ * The catalogue an org can actually run: built-ins merged with MODEL_CATALOG_EXTRA,
+ * narrowed to MODEL_ALLOWLIST when one is set. On Vertex AI or Bedrock an org can
+ * call only the models enabled on its cloud project, often under provider-specific
+ * ids (`claude-haiku-4-5@20251001`), so the extra catalogue adds those ids and the
+ * allowlist hides the rest — a dispatch then never offers a model that would 404.
+ * Providers are not filtered: a provider with no allowed model is simply unused.
+ */
+export function effectiveCatalogue(extra: unknown, allowlist: unknown): ModelCatalogue {
+  const merged = mergeCatalogue(extra);
+  const allowed = parseModelAllowlist(allowlist);
+  return allowed ? { ...merged, models: merged.models.filter((m) => allowed.has(m.id)) } : merged;
+}
+
+/**
+ * The model to use in place of `wanted` when the allowlist hides it: the first
+ * runnable model (its runtimes include `runtime`) of the same tier, else of the
+ * nearest tier (max -> balanced -> fast, fast -> balanced -> max). `wanted`
+ * itself when it is runnable; null when nothing in `models` can run there.
+ * The tier comes from `all` (the unfiltered catalogue) since `wanted` may be
+ * hidden from `models`; an unknown id counts as balanced.
+ */
+export function substituteModel(wanted: string, runtime: string, models: ModelInfo[], all: ModelInfo[] = MODELS): string | null {
+  const runnable = models.filter((m) => m.runtimes.includes(runtime));
+  if (runnable.some((m) => m.id === wanted)) return wanted;
+  const tier = all.find((m) => m.id === wanted)?.tier ?? 'balanced';
+  const order: Record<ModelTier, ModelTier[]> = { max: ['max', 'balanced', 'fast'], balanced: ['balanced', 'max', 'fast'], fast: ['fast', 'balanced', 'max'] };
+  for (const t of order[tier]) {
+    const hit = runnable.find((m) => m.tier === t);
+    if (hit) return hit.id;
+  }
+  return null;
+}
+
 export function modelIds(catalogue: ModelInfo[]): string[] {
   return catalogue.map((m) => m.id);
 }
