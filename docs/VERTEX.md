@@ -45,7 +45,17 @@ brew install --cask docker-desktop gcloud-cli
 ```
 
 Then **open Docker Desktop** once from Applications, accept its terms, and wait until
-it says it's running. Check everything with:
+it says it's running.
+
+> **If you use Rancher Desktop** instead of Docker Desktop, install it with
+> `brew install --cask rancher gcloud-cli` in place of the last line above. Open Rancher
+> Desktop, and in its first-run screen (or **Preferences**) set **Container Engine** to
+> **dockerd (moby)**, not containerd, so the `docker` and `docker compose` commands work.
+> Untick **Kubernetes** (ASF doesn't use it) and give the VM at least **6 GB** of memory
+> (**Preferences → Virtual Machine**). It shares your home folder with containers, so the
+> Google login in `~/.config/gcloud` reaches the worker the same way.
+
+Check everything with:
 
 ```bash
 git --version && docker compose version && gcloud --version | head -1
