@@ -14,6 +14,17 @@ test('catalogue ids are unique and every one is priced', () => {
   }
 });
 
+// Added test for built-in model IDs being unique and lowercase
+test('built-in model ids are unique and lowercase', () => {
+  const ids = MODELS.map((m) => m.id);
+  // Ensure uniqueness (duplicate check repeats existing test)
+  assert.equal(new Set(ids).size, ids.length, 'duplicate built-in model id');
+  // Ensure each id is lower case
+  for (const id of ids) {
+    assert.equal(id, id.toLowerCase(), `${id} is not lowercase`);
+  }
+});
+
 test("default team: Opus 4.8 plans and implements, Sonnet 5 tests and reviews", () => {
   assert.equal(DEFAULT_ROLE_MODELS.planner, 'claude-opus-4-8');
   assert.equal(DEFAULT_ROLE_MODELS.implementer, 'claude-opus-4-8');
