@@ -155,3 +155,9 @@ test('substituteModel: same tier first, then the nearest; only models the runtim
 test('allowlist entries lose surrounding quotes', () => {
   assert.deepEqual([...parseModelAllowlist('"claude-sonnet-5", \'claude-opus-5[1m]\'')!], ['claude-sonnet-5', 'claude-opus-5[1m]']);
 });
+
+test('model ids are lowercase', () => {
+  for (const id of MODELS.map(m => m.id)) {
+    assert.equal(id, id.toLowerCase(), `${id} is not lowercase`);
+  }
+});
