@@ -13,6 +13,12 @@ test('catalogue ids are unique and every one is priced', () => {
     assert.ok(usd !== null && usd > 0, `${id} has no pricing row`);
   }
 });
+test('built-in model ids are unique and lowercase', () => {
+  const ids = MODELS.map((m) => m.id);
+  assert.equal(new Set(ids).size, ids.length);
+  for (const id of ids) assert.equal(id, id.toLowerCase(), `${id} is not lowercase`);
+});
+
 
 test("default team: Opus 4.8 plans and implements, Sonnet 5 tests and reviews", () => {
   assert.equal(DEFAULT_ROLE_MODELS.planner, 'claude-opus-4-8');
